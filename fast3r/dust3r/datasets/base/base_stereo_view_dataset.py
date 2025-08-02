@@ -36,7 +36,8 @@ class BaseStereoViewDataset(EasyDataset):
         self,
         *,  # only keyword arguments
         split=None,
-        resolution=None,  # square_size or (width, height) or list of [(width,height), ...]
+        # square_size or (width, height) or list of [(width,height), ...]
+        resolution=None,
         transform=ImgNorm,
         aug_crop=False,
         seed=None,
@@ -48,7 +49,7 @@ class BaseStereoViewDataset(EasyDataset):
         if isinstance(transform, str):
             transform = eval(transform)
         self.transform = transform
-        
+
         self.aug_crop = aug_crop
         self.seed = seed
 
@@ -59,7 +60,8 @@ class BaseStereoViewDataset(EasyDataset):
         return f"{len(self)} pairs"
 
     def __repr__(self):
-        resolutions_str = "[" + ";".join(f"{w}x{h}" for w, h in self._resolutions) + "]"
+        resolutions_str = "[" + \
+            ";".join(f"{w}x{h}" for w, h in self._resolutions) + "]"
         return (
             f"""{type(self).__name__}({self.get_stats()},
             {self.split=},
@@ -109,6 +111,7 @@ class BaseStereoViewDataset(EasyDataset):
             width, height = view["img"].size
             view["true_shape"] = np.int32((height, width))
             view["img"] = self.transform(view["img"])
+            view['image_167'] = self.transform(view['image_167'])
 
             assert "camera_intrinsics" in view
             if "camera_pose" not in view:
@@ -163,7 +166,8 @@ class BaseStereoViewDataset(EasyDataset):
             self._resolutions.append((width, height))
 
     def _crop_resize_if_necessary(
-        self, image, depthmap, intrinsics, resolution, rng=None, info=None
+        self, image, image_167, depthmap, intrinsics, resolution, rng=None, 
+        info=None
     ):
         """This function:
         - first downsizes the image with LANCZOS inteprolation,
@@ -171,6 +175,7 @@ class BaseStereoViewDataset(EasyDataset):
         """
         if not isinstance(image, PIL.Image.Image):
             image = PIL.Image.fromarray(image)
+            image_167 = PIL.Image.fromarray(image_167)
 
         # downscale with lanczos interpolation so that image.size == resolution
         # cropping centered on the principal point
@@ -184,8 +189,8 @@ class BaseStereoViewDataset(EasyDataset):
         l, t = cx - min_margin_x, cy - min_margin_y
         r, b = cx + min_margin_x, cy + min_margin_y
         crop_bbox = (l, t, r, b)
-        image, depthmap, intrinsics = cropping.crop_image_depthmap(
-            image, depthmap, intrinsics, crop_bbox
+        image, image_167, depthmap, intrinsics = cropping.crop_image_depthmap(
+            image, image_167, depthmap, intrinsics, crop_bbox
         )
 
         # transpose the resolution if necessary
@@ -214,11 +219,11 @@ class BaseStereoViewDataset(EasyDataset):
         crop_bbox = cropping.bbox_from_intrinsics_in_out(
             intrinsics, intrinsics2, resolution
         )
-        image, depthmap, intrinsics2 = cropping.crop_image_depthmap(
-            image, depthmap, intrinsics, crop_bbox
+        image,image_167, depthmap, intrinsics2 = cropping.crop_image_depthmap(
+            image, image_167, depthmap, intrinsics, crop_bbox
         )
 
-        return image, depthmap, intrinsics2
+        return image,image_167, depthmap, intrinsics2
 
 
 def is_good_type(key, v):

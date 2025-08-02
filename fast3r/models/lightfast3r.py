@@ -1,3 +1,4 @@
+import torchvision
 import time
 import timm
 import torch
@@ -5,29 +6,26 @@ import numpy as np
 import torch.nn as nn
 import huggingface_hub
 import torch.distributed
-import torch.autograd.profiler as profiler
 import torch.nn.functional as F
+import torch.autograd.profiler as profiler
 
 from copy import deepcopy
 from typing import Optional
 from einops import rearrange
-import huggingface_hub
-from omegaconf import DictConfig, OmegaConf
-import torch
-import torch.distributed
-import torch.nn as nn
-import numpy as np
-from fast3r.dust3r.datasets.base.base_stereo_view_dataset import view_name
-from fast3r.dust3r.heads.postprocess import postprocess
-from fast3r.dust3r.heads.dpt_head import PixelwiseTaskWithDPT
-from fast3r.croco.models.blocks import Block, PositionGetter
-from fast3r.croco.models.pos_embed import RoPE2D, get_1d_sincos_pos_embed_from_grid
-from fast3r.models.components.llama import TransformerBlock, RMSNorm, precompute_freqs_cis
 from packaging import version
 from functools import partial
 from fast3r.utils import pylogger
+from transformers import AutoModel
 from omegaconf import DictConfig, OmegaConf
+from efficientnet_pytorch import EfficientNet
 from fast3r.dust3r.patch_embed import get_patch_embed
+from fast3r.dust3r.heads.postprocess import postprocess
+from fast3r.dust3r.heads.dpt_head import PixelwiseTaskWithDPT
+from fast3r.croco.models.blocks import Block, PositionGetter
+from fast3r.dust3r.datasets.base.base_stereo_view_dataset import view_name
+from fast3r.croco.models.pos_embed import RoPE2D, get_1d_sincos_pos_embed_from_grid
+from fast3r.models.components.llama import TransformerBlock, RMSNorm, precompute_freqs_cis
+
 
 from fast3r.dust3r.utils.misc import (
     freeze_all_params,
@@ -596,6 +594,23 @@ class LightFast3Rv2(nn.Module,
             encoder_args = deepcopy(encoder_args)
             encoder_args.pop("encoder_type")
             self.encoder = ResNetEncoder(**encoder_args)
+        elif encoder_args["encoder_type"] == "mambavision":
+            # Drop the encoder_type key
+            encoder_args = deepcopy(encoder_args)
+            encoder_args.pop("encoder_type")
+            self.encoder = Mambavision(**encoder_args)
+        elif encoder_args["encoder_type"] == 'efficientnet':  # Version 2
+            encoder_args.pop('encoder_type')
+            self.encoder = Efficient(**encoder_args)
+        elif encoder_args["encoder_type"] == 'efficientnetv2':  # Version 2
+            encoder_args.pop('encoder_type')
+            self.encoder = EfficientV2(**encoder_args)
+        elif encoder_args["encoder_type"] == 'mobilenetv4':  # Version 2
+            encoder_args.pop('encoder_type')
+            self.encoder = MobileNetV4(**encoder_args)
+        elif encoder_args["encoder_type"] == 'mobilenetv4_167':  # Version 2
+            encoder_args.pop('encoder_type')
+            self.encoder = MobileNetV4_167(**encoder_args)
         else:
             raise ValueError(
                 f"Unsupported encoder type: {encoder_args['encoder_type']}")
@@ -709,12 +724,14 @@ class LightFast3Rv2(nn.Module,
         encoded_feats, shapes = [], []
         for view in views:
             img = view["img"]
+            img167 = view.get("image_167")  # optional 167px image
+
             true_shape = view.get(
                 "true_shape", torch.tensor(img.shape[-2:])[None].repeat(B, 1)
             )
 
             # CNN encoder returns spatial features directly
-            feat = self.encoder(img)  # B x C x H x W
+            feat = self.encoder(img, img167)  # B x C x H x W
             # feat = feat.view(
             #     B, feat.shape[1], -1).transpose(1, 2)
             encoded_feats.append(feat)
@@ -972,7 +989,150 @@ class LightDarkNet53(nn.Module):
         x1 = self.backbone(image)[-2]
         x2 = self.conv(x1)
         features = x2.view(x2.shape[0], -1, x2.shape[1])
+        print(features.shape)
         return features
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+
+
+class Mambavision(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(Mambavision, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = AutoModel.from_pretrained(
+            "nvidia/MambaVision-S-1K", trust_remote_code=True)
+
+        # Freeze backbone if specified
+        # self.feature_info = self.backbone.feature_info
+        self.conv = nn.Conv2d(96, 1024, kernel_size=7, stride=4, padding=2)
+
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        x1 = self.backbone(image)[1][0]
+        x2 = self.conv(x1)  # [1, 1024, 32, 24]
+        features = x2.view(x2.shape[0], -1, x2.shape[1])
+        # print(features.shape)
+        return features
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+
+
+class Efficient(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(Efficient, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = EfficientNet.from_pretrained('efficientnet-b6')
+
+        self.conv = nn.Conv2d(200, self.embed_dim,
+                              kernel_size=3, stride=1, padding=1)
+
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        x1 = self.backbone.extract_endpoints(
+            image)['reduction_4']  # [1, 200, 32, 24]
+        x2 = self.conv(x1)  # [1, 1024, 32, 24]
+        features = x2.view(x2.shape[0], -1, x2.shape[1])
+        # print(features.shape)
+        return features  # torch.Size([1, 768, 1024])
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+
+
+class EfficientV2(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(EfficientV2, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = torchvision.models.efficientnet_v2_s(pretrained=True)
+
+        self.conv = nn.Conv2d(1280, self.embed_dim,
+                              kernel_size=3, stride=1, padding=1)
+
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        x1 = self.backbone.features(image)  # [1, 1280, 16, 12]
+        x1_d1, x1_d2 = x1.shape[-2:]
+        x2 = F.interpolate(x1, size=(x1_d2*2, x1_d1*2),  # [1, 1280, 32, 24]
+                           mode='bilinear',
+                           align_corners=False)  # [1, 1280, 32, 24]
+        # import ipdb; ipdb.set_trace()
+        x3 = self.conv(x2)  # [1, 1024, 32, 24]
+        features = x3.view(x3.shape[0], -1, x3.shape[1])
+        # print(features.shape)
+        return features  # torch.Size([1, 768, 1024])
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+
+
+class MobileNetV4(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(MobileNetV4, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model('mobilenetv4_conv_large.e500_r256_in1k',
+                                          pretrained=True, features_only=True)
+
+        self.conv = nn.Conv2d(192, self.embed_dim,
+                              kernel_size=3, stride=1, padding=1)
+
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        x1 = self.backbone(image)[-2]  # [1, 192, 32, 24]
+        # import ipdb; ipdb.set_trace()
+        x2 = self.conv(x1)  # [1, 1024, 32, 24]
+        features = x2.view(x2.shape[0], -1, x2.shape[1])
+        # print(features.shape)
+        return features  # torch.Size([1, 768, 1024])
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+
+
+class MobileNetV4_167(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(MobileNetV4_167, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            'mobilenetv4_conv_large.e500_r256_in1k',
+            pretrained=True, features_only=True)
+
+        self.conv = nn.Conv2d(192, int(self.embed_dim/2),
+                              kernel_size=3, stride=1, padding=1)
+
+    def forward(self, image, image167):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        x1 = self.backbone(image)[-2]  # [1, 192, 32, 24]
+        x1_167 = self.backbone(image167)[-2]  # [1, 192, 32, 24]
+        # import ipdb; ipdb.set_trace()
+        x2 = self.conv(x1)  # [1, 512, 32, 24]
+        x2_167 = self.conv(x1_167)  # [1, 512, 32, 24]
+        # Concatenate the features from both images along the channel dimension
+        x2_mix = torch.cat((x2, x2_167), dim=1)
+        features = x2_mix.view(x2_mix.shape[0], -1, x2_mix.shape[1])
+        # print(features.shape)
+        return features  # torch.Size([1, 768, 1024])
 
     def get_feature_dims(self):
         """Get the number of channels at each stage"""
@@ -1169,12 +1329,12 @@ class Fast3RDecoderCNN2(nn.Module):
         for blk in self.projections:
             x1 = blk(x)
             final_output.append(x1)
+            # print(x1.shape)
         # output = self.projections(x)  # (B, Npatches, D * depth)
         # import ipdb; ipdb.set_trace()
         # output = output.view(
         #     output.shape[0], output.shape[1], self.num_outputs, -1)
         # output = output.permute(0, 2, 1, 3)
-        
 
         return final_output
 

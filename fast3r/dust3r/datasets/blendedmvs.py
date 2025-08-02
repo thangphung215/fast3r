@@ -15,7 +15,8 @@
 import os.path as osp
 import numpy as np
 
-from fast3r.dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
+from fast3r.dust3r.datasets.base.base_stereo_view_dataset import (
+    BaseStereoViewDataset)
 from fast3r.dust3r.utils.image import imread_cv2
 
 
@@ -69,7 +70,8 @@ class BlendedMVS (BaseStereoViewDataset):
             camera_pose[:3, 3] = camera_params['t_cam2world']
 
             image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                image, depthmap, intrinsics, resolution, rng, info=(seq_path, impath))
+                image, depthmap, intrinsics, resolution, rng, 
+                info=(seq_path, impath))
 
             views.append(dict(
                 img=image,
@@ -88,7 +90,9 @@ if __name__ == '__main__':
     from dust3r.viz import SceneViz, auto_cam_size
     from dust3r.utils.image import rgb
 
-    dataset = BlendedMVS(split='train', ROOT="data/blendedmvs_processed", resolution=224, aug_crop=16)
+    dataset = BlendedMVS(
+        split='train', ROOT="data/blendedmvs_processed", resolution=224,
+        aug_crop=16)
 
     for idx in np.random.permutation(len(dataset)):
         views = dataset[idx]
