@@ -667,7 +667,8 @@ class Regr3DMultiviewV4(Criterion, MultiLoss):
         normed_pts_list = []
         for pts, valid in zip(pts_list, valid_list):
             valid_pts = pts.clone()
-            valid_pts = valid_pts.view(valid_pts.shape[0], -1, 3)
+            valid_pts = valid_pts.reshape(valid_pts.shape[0], -1, 3)
+            # valid_pts = valid_pts.view(valid_pts.shape[0], -1, 3)
             if valid is not None:
                 valid = valid.view(valid.shape[0], -1)
                 valid_pts[valid == 0] = float('nan') # mask out invalid with nan

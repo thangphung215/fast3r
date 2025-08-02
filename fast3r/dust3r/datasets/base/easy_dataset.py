@@ -188,5 +188,6 @@ class CatDataset(EasyDataset):
     def _resolutions(self):
         resolutions = self.datasets[0]._resolutions
         for dataset in self.datasets[1:]:
+            # print(tuple(dataset._resolutions),tuple(resolutions))
             assert tuple(dataset._resolutions) == tuple(resolutions)
         return resolutions
