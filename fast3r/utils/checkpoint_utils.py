@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 
 from fast3r.models.multiview_dust3r_module import MultiViewDUSt3RLitModule
 from fast3r.models.fast3r import Fast3R
+from fast3r.models.lightfast3r import LightFast3Rv2
 
 from lightning.pytorch.utilities.deepspeed import convert_zero_checkpoint_to_fp32_state_dict
 
@@ -34,7 +35,7 @@ def load_lightning_checkpoint(checkpoint_dir, device: torch.device):
     cfg = OmegaConf.load(config_path)
 
     # set these flags so that the model can inference on arbitrary aspect ratio images
-    cfg.model.net.encoder_args.patch_embed_cls = "PatchEmbedDust3R"
+    # cfg.model.net.encoder_args.patch_embed_cls = "PatchEmbedDust3R"
     cfg.model.net.head_args.landscape_only = False
     
     lit_module = hydra.utils.instantiate(cfg.model, train_criterion=None, validation_criterion=None)
@@ -91,7 +92,8 @@ def load_model(checkpoint_dir, device: torch.device, is_lightning_checkpoint=Fal
         return load_lightning_checkpoint(checkpoint_dir, device)
     
     # it is a HF checkpoint, so load the model directly with HF `from_pretrained`
-    model = Fast3R.from_pretrained(checkpoint_dir)
+    model = LightFast3Rv2.from_pretrained(checkpoint_dir)
+    # model = Fast3R.from_pretrained(checkpoint_dir)
     model = model.to(device)
     
     # Create a lightweight lit_module wrapper for the model
@@ -141,9 +143,10 @@ def convert_checkpoint_to_hf_checkpoint(checkpoint_dir: str, output_path: str, p
 
 if __name__ == "__main__":
     # Example usage
-    os.environ["pretrained_fast3r"] = "placeholder_that_does_not_matter"
-    checkpoint_dir = "/path/to/lightning/checkpoint"
-    output_path = "Fast3R_HF_Checkpoint"
+    os.environ["pretrained_fast3r"] = "mrwin215"
+    checkpoint_dir = "logs/super_long_training_mobilenetv4_arkit_2inputs_test2_sum/runs/super_long_training_mobilenetv4_arkit_2inputs_test2_sum_99999_20250716"
+    output_path = "lightfast3rv2_Checkpoint"
+    # output_path = "Fast3R_HF_Checkpoint"
     
     convert_checkpoint_to_hf_checkpoint(
         checkpoint_dir=checkpoint_dir,

@@ -159,3 +159,15 @@ configs/local/default.yaml
 
 # Aim logging
 .aim
+data1
+camera_poses
+point_clouds
+output_sfm
+cache
+
+5views*
+download_data
+data_BlendedMVS_1-67*
+gradio_tmp*
+temp_preview*
+demo_outputs/*

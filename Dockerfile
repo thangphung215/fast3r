@@ -21,9 +21,12 @@ RUN git clone --depth 1 https://github.com/facebookresearch/fast3r
 WORKDIR /fast3r
 RUN pip install -r requirements.txt
 RUN pip install -e .
+# RUN pip install git+https://github.com/state-spaces/mamba.git@v2.2.4
+RUN pip install https://github.com/state-spaces/mamba/releases/download/v2.2.2/mamba_ssm-2.2.2+cu122torch2.4cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+# RUN pip install mambavision
 
 ENV CUDA_VISIBLE_DEVICES=0
 
 EXPOSE 7860
 
-CMD ["python", "fast3r/viz/demo.py"]
+# CMD ["python", "fast3r/viz/demo.py"]

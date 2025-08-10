@@ -1,3 +1,4 @@
+import cv2
 import torchvision
 import time
 import timm
@@ -26,7 +27,7 @@ from fast3r.dust3r.datasets.base.base_stereo_view_dataset import view_name
 from fast3r.croco.models.pos_embed import RoPE2D, get_1d_sincos_pos_embed_from_grid
 from fast3r.models.components.llama import TransformerBlock, RMSNorm, precompute_freqs_cis
 
-
+from fast3r.models.fast3r import CroCoEncoder
 from fast3r.dust3r.utils.misc import (
     freeze_all_params,
     transpose_to_landscape,
@@ -38,12 +39,15 @@ from fast3r.dust3r.heads.dpt_head import PixelwiseTaskWithDPT
 from fast3r.croco.models.blocks import Block
 from fast3r.croco.models.pos_embed import (
     RoPE2D, get_1d_sincos_pos_embed_from_grid)
+
 log = pylogger.RankedLogger(__name__, rank_zero_only=True)
 
 hf_version_number = huggingface_hub.__version__
 assert version.parse(hf_version_number) >= version.parse(
     "0.22.0"
 ), "Outdated huggingface_hub version, please reinstall requirements.txt"
+
+
 
 
 class LightFast3R(nn.Module,
@@ -258,6 +262,7 @@ class LightFast3R(nn.Module,
             "none": [],
             "encoder": [self.encoder],
             "sandwich": [self.encoder, self.downstream_head],
+            "head": [self.downstream_head, self.downstream_head_local],
         }
         freeze_all_params(to_be_frozen[freeze])
 
@@ -492,8 +497,6 @@ class LightFast3R(nn.Module,
                 # Process each chunk through self.head and local_head
                 for chunk, chunk_shapes in zip(chunked_gathered_outputs_list, shape_chunks):
                     # Forward pass for self.head
-                    import ipdb
-                    ipdb.set_trace()
                     result_chunk = self.head(chunk, chunk_shapes)
                     result_chunks.append(result_chunk)
 
@@ -709,12 +712,100 @@ class LightFast3Rv2(nn.Module,
     def load_state_dict(self, ckpt, **kw):
         return super().load_state_dict(ckpt, **kw)
 
+    def load_from_dust3r_checkpoint(self, dust3r_checkpoint_path: str):
+        """Load a Dust3R checkpoint into the model.
+        Only load the patch_embed, enc_blocks, enc_norm, and downstream_head1 components from the checkpoint.
+
+        Args:
+            dust3r_checkpoint_path (str): Path to the Dust3R checkpoint.
+        """
+        # Load the checkpoint
+        checkpoint = torch.load(dust3r_checkpoint_path,
+                                weights_only=False)['model']
+
+        # Initialize state dictionaries for different components
+        encoder_state_dict = {}
+        downstream_head_state_dict = {}
+
+        # Prepare to track loaded keys
+        loaded_keys = set()
+
+        # Split the checkpoint into encoder and downstream head
+        for key, value in checkpoint.items():
+            if key.startswith("patch_embed") or key.startswith("enc_blocks") or key.startswith("enc_norm"):
+                if isinstance(self.encoder, CroCoEncoder):
+                    new_key = key.replace("patch_embed", "encoder.patch_embed") \
+                                 .replace("enc_blocks", "encoder.enc_blocks") \
+                                 .replace("enc_norm", "encoder.enc_norm")
+                    encoder_state_dict[new_key] = value
+                    loaded_keys.add(key)  # Tentatively mark as loaded
+            elif key.startswith("downstream_head1"):
+                new_key = key.replace("downstream_head1", "downstream_head")
+                downstream_head_state_dict[new_key] = value
+                loaded_keys.add(key)  # Tentatively mark as loaded
+
+        # Load the encoder part into the model if it is an instance of CroCoEncoder
+        if isinstance(self.encoder, CroCoEncoder):
+            load_result = self.load_state_dict(
+                encoder_state_dict, strict=False)
+
+            # Remove keys that failed to load
+            missing_keys = set(load_result.missing_keys)
+            unexpected_keys = set(load_result.unexpected_keys)
+            loaded_keys -= (missing_keys | unexpected_keys)
+
+        # Load the downstream head part into the model with try-catch logic
+        # Save the original downstream head state to restore in case of failure
+        downstream_head_original_state = {
+            k: v.clone() for k, v in self.downstream_head.state_dict().items()}
+
+        if not self.head_args.get('skip_load_pretrained_head', False):
+            try:
+                load_result = self.load_state_dict(
+                    downstream_head_state_dict, strict=False)
+
+                # Remove keys that failed to load
+                missing_keys = set(load_result.missing_keys)
+                unexpected_keys = set(load_result.unexpected_keys)
+                loaded_keys -= (missing_keys | unexpected_keys)
+            except RuntimeError as e:
+                log.warning(f"Error loading downstream head: {str(e)}")
+                log.warning("Reverting downstream head to its original state")
+                # Revert downstream head to its original state
+                self.downstream_head.load_state_dict(
+                    downstream_head_original_state)
+
+                del downstream_head_original_state
+
+                # Remove downstream head keys from loaded_keys, as they were not loaded
+                loaded_keys -= set([key for key in checkpoint.keys()
+                                   if key.startswith("downstream_head1")])
+        else:
+            log.info("Skipping loading pretrained head")
+
+        # Compute not loaded keys as difference between all checkpoint keys and loaded keys
+        checkpoint_keys = set(checkpoint.keys())
+        not_loaded_keys = checkpoint_keys - loaded_keys
+
+        del checkpoint
+
+        # Process keys to log only first-level names
+        loaded_first_level_keys = {key.split('.')[0] for key in loaded_keys}
+        not_loaded_first_level_keys = {
+            key.split('.')[0] for key in not_loaded_keys}
+
+        # Log unique first-level keys
+        log.info(f"Loaded first-level keys: {sorted(loaded_first_level_keys)}")
+        log.info(
+            f"First-level keys not loaded: {sorted(not_loaded_first_level_keys)}")
+
     def set_freeze(self, freeze):  # this is for use by downstream models
         self.freeze = freeze
         to_be_frozen = {
             "none": [],
             "encoder": [self.encoder],
             "sandwich": [self.encoder, self.downstream_head],
+            "head": [self.downstream_head],
         }
         freeze_all_params(to_be_frozen[freeze])
 
@@ -725,7 +816,8 @@ class LightFast3Rv2(nn.Module,
         for view in views:
             img = view["img"]
             img167 = view.get("image_167")  # optional 167px image
-
+            assert img.shape == img167.shape, \
+                f"Image and 167px image must have the same shape, got {img.shape} and {img167.shape}"
             true_shape = view.get(
                 "true_shape", torch.tensor(img.shape[-2:])[None].repeat(B, 1)
             )
@@ -757,6 +849,9 @@ class LightFast3Rv2(nn.Module,
 
         # encode the images --> B,S,D
         encode_images_start_time = time.time()
+        # import ipdb
+        # ipdb.set_trace()
+        # encoded_feats, positions, shapes = self._encode_images(views)
         encoded_feats, shapes = self._encode_images(views)
         encode_images_end_time = time.time()
         if profiling:
@@ -1115,7 +1210,7 @@ class MobileNetV4_167(nn.Module):
             'mobilenetv4_conv_large.e500_r256_in1k',
             pretrained=True, features_only=True)
 
-        self.conv = nn.Conv2d(192, int(self.embed_dim/2),
+        self.conv = nn.Conv2d(192, int(self.embed_dim),
                               kernel_size=3, stride=1, padding=1)
 
     def forward(self, image, image167):
@@ -1125,11 +1220,14 @@ class MobileNetV4_167(nn.Module):
         """
         x1 = self.backbone(image)[-2]  # [1, 192, 32, 24]
         x1_167 = self.backbone(image167)[-2]  # [1, 192, 32, 24]
+        # print(image.shape, image167.shape)
+        # print(x1.shape, x1_167.shape)
         # import ipdb; ipdb.set_trace()
         x2 = self.conv(x1)  # [1, 512, 32, 24]
         x2_167 = self.conv(x1_167)  # [1, 512, 32, 24]
         # Concatenate the features from both images along the channel dimension
-        x2_mix = torch.cat((x2, x2_167), dim=1)
+        # x2_mix = torch.cat((x2, x2_167), dim=1)
+        x2_mix = x2 + x2_167  # [1, 512, 32, 24]
         features = x2_mix.view(x2_mix.shape[0], -1, x2_mix.shape[1])
         # print(features.shape)
         return features  # torch.Size([1, 768, 1024])

@@ -10,9 +10,11 @@ import cv2
 import numpy as np
 import random
 
+from copy import deepcopy
 from fast3r.dust3r.datasets.base.base_stereo_view_dataset import BaseStereoViewDataset
 from fast3r.dust3r.utils.image import imread_cv2
 from tqdm import tqdm
+
 
 class ARKitScenes_Multiview(BaseStereoViewDataset):
     def __init__(self, num_views=4, window_size=6, num_samples_per_window=10, ordered=False, data_scaling=1.0, *args, split, ROOT, **kwargs):
@@ -61,11 +63,13 @@ class ARKitScenes_Multiview(BaseStereoViewDataset):
             sorted_scene_ids = sorted(scene_to_indices.keys())
             selected_scene_ids = sorted_scene_ids[:num_scenes]
             # Keep only the selected scenes
-            scene_to_indices = {scene_id: scene_to_indices[scene_id] for scene_id in selected_scene_ids}
+            scene_to_indices = {
+                scene_id: scene_to_indices[scene_id] for scene_id in selected_scene_ids}
 
         # Sort each scene's indices by temporal order based on image names
         for scene_id, indices in scene_to_indices.items():
-            scene_to_indices[scene_id] = sorted(indices, key=lambda idx: self.images[idx])
+            scene_to_indices[scene_id] = sorted(
+                indices, key=lambda idx: self.images[idx])
 
         # Generate combinations of views within each scene
         for indices in scene_to_indices.values():
@@ -79,11 +83,13 @@ class ARKitScenes_Multiview(BaseStereoViewDataset):
                     for _ in range(self.num_samples_per_window):
                         if len(window_indices) >= self.num_views:
                             # Randomly sample a combination
-                            combo = random.sample(window_indices, self.num_views)
+                            combo = random.sample(
+                                window_indices, self.num_views)
 
                             # If ordered flag is set, sort based on the original order in window_indices
                             if self.ordered:
-                                combo = sorted(combo, key=lambda x: window_indices.index(x))
+                                combo = sorted(
+                                    combo, key=lambda x: window_indices.index(x))
 
                             self.combinations.append(tuple(combo))
 
@@ -92,6 +98,20 @@ class ARKitScenes_Multiview(BaseStereoViewDataset):
 
     def __len__(self):
         return len(self.combinations)
+
+    def crop_and_resize_blendedmvs(self, img, ratio=10/6):
+        raw_img = img.copy()
+        h, w = raw_img.shape[:2]
+        center = (w // 2, h // 2)
+        new_w = int(w / ratio)
+        new_h = int(h / ratio)
+        cropped_img = raw_img[center[1] - new_h // 2:center[1] + new_h // 2,
+                              center[0] - new_w // 2:center[0] + new_w // 2]
+        # Resize to original size
+        resized_img = cv2.resize(
+            cropped_img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        return resized_img
 
     def _get_views(self, idx, resolution, rng):
         start_time = time.time()
@@ -107,17 +127,25 @@ class ARKitScenes_Multiview(BaseStereoViewDataset):
             basename = self.images[view_idx]
 
             # Load RGB image
-            rgb_image = imread_cv2(osp.join(scene_dir, 'vga_wide', basename.replace('.png', '.jpg')))
+            rgb_image = imread_cv2(
+                osp.join(scene_dir, 'vga_wide', basename.replace('.png', '.jpg')))
+            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
+            assert rgb_image.shape[:2] == image_167.shape[:2], \
+                f"Image shape mismatch: {rgb_image.shape} vs {image_167.shape}"
             # Load depthmap
-            depthmap = imread_cv2(osp.join(scene_dir, 'lowres_depth', basename), cv2.IMREAD_UNCHANGED)
+            depthmap = imread_cv2(
+                osp.join(scene_dir, 'lowres_depth', basename), cv2.IMREAD_UNCHANGED)
             depthmap = depthmap.astype(np.float32) / 1000
             depthmap[~np.isfinite(depthmap)] = 0  # invalid
 
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=view_idx)
+            rgb_image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, image_167, depthmap, intrinsics, resolution, rng=rng, info=view_idx)
 
+            assert rgb_image.size == image_167.size, \
+                f"Image and 167px image must have the same size after cropping, got {rgb_image.size} and {image_167.size} for view={view_idx}"
             views.append(dict(
                 img=rgb_image,
+                image_167=image_167,
                 depthmap=depthmap.astype(np.float32),
                 camera_pose=camera_pose.astype(np.float32),
                 camera_intrinsics=intrinsics.astype(np.float32),

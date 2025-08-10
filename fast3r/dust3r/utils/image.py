@@ -10,6 +10,7 @@
 # --------------------------------------------------------
 # utilitary functions about images (loading/converting...)
 # --------------------------------------------------------
+import cv2
 import os
 
 import numpy as np
@@ -17,9 +18,9 @@ import PIL.Image
 import torch
 import torchvision.transforms as tvf
 from PIL.ImageOps import exif_transpose
+from PIL import Image
 
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
-import cv2
 
 try:
     from pillow_heif import register_heif_opener
@@ -29,7 +30,8 @@ try:
 except ImportError:
     heif_support_enabled = False
 
-ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+ImgNorm = tvf.Compose(
+    [tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 
 def imread_cv2(path, options=cv2.IMREAD_COLOR):
@@ -73,12 +75,52 @@ def _resize_pil_image(img, long_edge_size):
     return img.resize(new_size, interp)
 
 
+def crop_and_resize_blendedmvs(img, ratio=10/6):
+    h, w = img.shape[:2]
+    center = (w // 2, h // 2)
+    new_w = int(w / ratio)
+    new_h = int(h / ratio)
+    cropped_img = img[center[1] - new_h // 2:center[1] + new_h // 2,
+                      center[0] - new_w // 2:center[0] + new_w // 2]
+    # Resize to original size
+    resized_img = cv2.resize(
+        cropped_img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+    return resized_img
+
+
+def crop_and_resize_blendedmvs_pillow(img, ratio=10/6):
+    # Ensure img is a Pillow Image
+    if not isinstance(img, Image.Image):
+        img = Image.fromarray(img)
+
+    w, h = img.size
+    center_x, center_y = w // 2, h // 2
+
+    new_w = int(w / ratio)
+    new_h = int(h / ratio)
+
+    left = center_x - new_w // 2
+    top = center_y - new_h // 2
+    right = center_x + new_w // 2
+    bottom = center_y + new_h // 2
+
+    # Crop
+    cropped_img = img.crop((left, top, right, bottom))
+
+    # Resize to original size
+    resized_img = cropped_img.resize((w, h), Image.BICUBIC)
+
+    return resized_img
+
+
 def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_clockwise_90=False, crop_to_landscape=False):
     """open and convert all images in a list or folder to proper input format for DUSt3R"""
     if isinstance(folder_or_list, str):
         if verbose:
             print(f">> Loading images from {folder_or_list}")
-        root, folder_content = folder_or_list, sorted(os.listdir(folder_or_list))
+        root, folder_content = folder_or_list, sorted(
+            os.listdir(folder_or_list))
 
     elif isinstance(folder_or_list, list):
         if verbose:
@@ -97,9 +139,15 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_cloc
     for path in folder_content:
         if not path.lower().endswith(supported_images_extensions):
             continue
-        img = exif_transpose(PIL.Image.open(os.path.join(root, path))).convert("RGB")
+        img = exif_transpose(PIL.Image.open(
+            os.path.join(root, path))).convert("RGB")
+        image_167 = PIL.Image.open(os.path.join(root, path))
+        image_167 = exif_transpose(
+            crop_and_resize_blendedmvs_pillow(image_167)).convert("RGB")
         if rotate_clockwise_90:
             img = img.rotate(-90, expand=True)
+            image_167 = image_167.rotate(-90, expand=True)
+            
         if crop_to_landscape:
             # Crop to a landscape aspect ratio (e.g., 16:9)
             desired_aspect_ratio = 4 / 3
@@ -122,24 +170,34 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_cloc
                 right = width
 
             img = img.crop((left, top, right, bottom))
+            image_167 = image_167.crop((left, top, right, bottom))
+            
 
         W1, H1 = img.size
         if size == 224:
             # resize short side to 224 (then crop)
             img = _resize_pil_image(img, round(size * max(W1 / H1, H1 / W1)))
+            image_167 = _resize_pil_image(image_167, round(size * max(W1 / H1, H1 / W1)))
+            
         else:
             # resize long side to 512
             img = _resize_pil_image(img, size)
+            image_167 = _resize_pil_image(image_167, size)
+            
         W, H = img.size
         cx, cy = W // 2, H // 2
         if size == 224:
             half = min(cx, cy)
             img = img.crop((cx - half, cy - half, cx + half, cy + half))
+            image_167 = image_167.crop((cx - half, cy - half, cx + half, cy + half))
+            
         else:
             halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
             if not (square_ok) and W == H:
                 halfh = 3 * halfw / 4
             img = img.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
+            image_167 = image_167.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
+            
 
         W2, H2 = img.size
         if verbose:
@@ -147,6 +205,7 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_cloc
         imgs.append(
             dict(
                 img=ImgNorm(img)[None],
+                image_167=ImgNorm(image_167)[None],
                 true_shape=np.int32([img.size[::-1]]),
                 idx=len(imgs),
                 instance=str(len(imgs)),

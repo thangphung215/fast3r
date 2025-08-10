@@ -10,14 +10,15 @@ import json
 import numpy as np
 import os.path as osp
 from collections import deque
-
+from copy import deepcopy
 from dust3r.utils.image import imread_cv2
 from .base_many_view_dataset import BaseManyViewDataset
 
+
 class ArkitScene(BaseManyViewDataset):
-    def __init__(self, num_seq=100, num_frames=5, 
-                 min_thresh=10, max_thresh=100, 
-                 test_id=None, full_video=False, 
+    def __init__(self, num_seq=100, num_frames=5,
+                 min_thresh=10, max_thresh=100,
+                 test_id=None, full_video=False,
                  kf_every=1, *args, ROOT, **kwargs):
         self.ROOT = ROOT
         super().__init__(*args, **kwargs)
@@ -25,56 +26,58 @@ class ArkitScene(BaseManyViewDataset):
         self.num_frames = num_frames
         self.max_thresh = max_thresh
         self.min_thresh = min_thresh
-        self.active_thresh= min_thresh
+        self.active_thresh = min_thresh
         self.test_id = test_id
         self.full_video = full_video
         self.kf_every = kf_every
 
-         # load all scenes
+        # load all scenes
         self.load_all_scenes(ROOT)
-    
+
     def __len__(self):
         return len(self.scene_list) * self.num_seq
-    
+
     def load_all_scenes(self, base_dir, num_seq=200):
-        
+
         if self.test_id is None:
-            
+
             if self.split == 'train':
                 scene_path = osp.join(base_dir, 'raw', 'Training')
             elif self.split == 'val':
                 scene_path = osp.join(base_dir, 'raw', 'Validation')
-            
+
             self.scene_path = scene_path
             self.scene_list = os.listdir(scene_path)
-            
-                
+
             print(f"Found {len(self.scene_list)} scenes in split {self.split}")
-            
+
         else:
             if isinstance(self.test_id, list):
                 self.scene_list = self.test_id
             else:
                 self.scene_list = [self.test_id]
-                
+
             print(f"Test_id: {self.test_id}")
-    
+
     def get_intrinsic(self, intrinsics_dir, frame_id, video_id):
         '''
         Nerfstudio
         '''
-        intrinsic_fn = osp.join(intrinsics_dir, f"{video_id}_{frame_id}.pincam")
+        intrinsic_fn = osp.join(
+            intrinsics_dir, f"{video_id}_{frame_id}.pincam")
 
         if not osp.exists(intrinsic_fn):
-            intrinsic_fn = osp.join(intrinsics_dir, f"{video_id}_{float(frame_id) - 0.001:.3f}.pincam")
+            intrinsic_fn = osp.join(
+                intrinsics_dir, f"{video_id}_{float(frame_id) - 0.001:.3f}.pincam")
 
         if not osp.exists(intrinsic_fn):
-            intrinsic_fn = osp.join(intrinsics_dir, f"{video_id}_{float(frame_id) + 0.001:.3f}.pincam")
+            intrinsic_fn = osp.join(
+                intrinsics_dir, f"{video_id}_{float(frame_id) + 0.001:.3f}.pincam")
 
         _, _, fx, fy, hw, hh = np.loadtxt(intrinsic_fn)
         intrinsic = np.asarray([[fx, 0, hw], [0, fy, hh], [0, 0, 1]])
         return intrinsic
-    
+
     def get_pose(self, frame_id, poses_from_traj):
         frame_pose = None
         if str(frame_id) in poses_from_traj:
@@ -83,10 +86,10 @@ class ArkitScene(BaseManyViewDataset):
             for my_key in poses_from_traj:
                 if abs(float(frame_id) - float(my_key)) < 0.1:
                     frame_pose = np.array(poses_from_traj[str(my_key)])
-        
+
         if frame_pose is None:
             print(f"Warning: No pose found for frame {frame_id}")
-            
+
             return None
 
         assert frame_pose is not None
@@ -94,7 +97,7 @@ class ArkitScene(BaseManyViewDataset):
         frame_pose = frame_pose[np.array([1, 0, 2, 3]), :]
         frame_pose[2, :] *= -1
         return frame_pose
-    
+
     def traj_string_to_matrix(self, traj_string):
         """convert traj_string into translation and rotation matrices
         Args:
@@ -114,19 +117,36 @@ class ArkitScene(BaseManyViewDataset):
         angle_axis = [float(tokens[1]), float(tokens[2]), float(tokens[3])]
         r_w_to_p, _ = cv2.Rodrigues(np.asarray(angle_axis))  # type: ignore
         # Translation
-        t_w_to_p = np.asarray([float(tokens[4]), float(tokens[5]), float(tokens[6])])
+        t_w_to_p = np.asarray(
+            [float(tokens[4]), float(tokens[5]), float(tokens[6])])
         extrinsics = np.eye(4, 4)
         extrinsics[:3, :3] = r_w_to_p
         extrinsics[:3, -1] = t_w_to_p
         Rt = np.linalg.inv(extrinsics)
         return (ts, Rt)
-    
-    def _get_views(self, idx, resolution, rng, attempts=0): 
+
+    def crop_and_resize_blendedmvs(self, img, ratio=10/6):
+        raw_img = img.copy()
+        # raw_img = deepcopy(img)
+        h, w = img.shape[:2]
+        center = (w // 2, h // 2)
+        new_w = int(w / ratio)
+        new_h = int(h / ratio)
+        cropped_img = raw_img[center[1] - new_h // 2:center[1] + new_h // 2,
+                              center[0] - new_w // 2:center[0] + new_w // 2]
+        # Resize to original size
+        resized_img = cv2.resize(
+            cropped_img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        return resized_img
+
+    def _get_views(self, idx, resolution, rng, attempts=0):
         scene_id = self.scene_list[idx // self.num_seq]
 
         image_path = osp.join(self.scene_path, scene_id, 'lowres_wide')
         depth_path = osp.join(self.scene_path, scene_id, 'lowres_depth')
-        intrinsics_path = osp.join(self.scene_path, scene_id, 'lowres_wide_intrinsics')
+        intrinsics_path = osp.join(
+            self.scene_path, scene_id, 'lowres_wide_intrinsics')
         pose_path = osp.join(self.scene_path, scene_id, 'lowres_wide.traj')
 
         if not osp.exists(image_path) or not osp.exists(depth_path) or not osp.exists(intrinsics_path) or not osp.exists(pose_path):
@@ -138,11 +158,13 @@ class ArkitScene(BaseManyViewDataset):
         img_idxs_ = [x.split(".png")[0].split("_")[1] for x in img_idxs_]
 
         if len(img_idxs_) < self.num_frames:
-            print(f"Warning: Not enough frames in {scene_id}, {len(img_idxs_)} < {self.num_frames}")
+            print(
+                f"Warning: Not enough frames in {scene_id}, {len(img_idxs_)} < {self.num_frames}")
             new_idx = rng.integers(0, self.__len__()-1)
             return self._get_views(new_idx, resolution, rng)
-        
-        img_idxs = self.sample_frame_idx(img_idxs_, rng, full_video=self.full_video)
+
+        img_idxs = self.sample_frame_idx(
+            img_idxs_, rng, full_video=self.full_video)
         imgs_idxs = deque(img_idxs)
 
         # Load trajectory
@@ -155,9 +177,6 @@ class ArkitScene(BaseManyViewDataset):
                 self.traj_string_to_matrix(line)[1].tolist()
             )
 
-        
-
-
         views = []
 
         while len(imgs_idxs) > 0:
@@ -166,14 +185,18 @@ class ArkitScene(BaseManyViewDataset):
             depthpath = osp.join(depth_path, f'{scene_id}_{im_idx}.png')
 
             camera_pose = self.get_pose(im_idx, poses_from_traj)
-            intrinsics_ = self.get_intrinsic(intrinsics_path, im_idx, scene_id).astype(np.float32)
+            intrinsics_ = self.get_intrinsic(
+                intrinsics_path, im_idx, scene_id).astype(np.float32)
 
             if not osp.exists(impath) or not osp.exists(depthpath) or camera_pose is None:
-                print (f"Warning: Image/Depth/Pose not found for {impath}")
+                print(f"Warning: Image/Depth/Pose not found for {impath}")
                 new_idx = rng.integers(0, self.__len__()-1)
                 return self._get_views(new_idx, resolution, rng)
 
             rgb_image = imread_cv2(impath)
+            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
+            assert rgb_image.shape[:2] == image_167.shape[:2], \
+                f"Image shape mismatch: {rgb_image.shape} vs {image_167.shape}"
             depthmap = imread_cv2(depthpath, cv2.IMREAD_UNCHANGED)
             depthmap = np.nan_to_num(depthmap.astype(np.float32), 0.0) / 1000.0
 
@@ -181,9 +204,9 @@ class ArkitScene(BaseManyViewDataset):
             # gl to cv
             camera_pose[:, 1:3] *= -1.0
 
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics_, resolution, rng=rng, info=impath)
-            
+            rgb_image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, image_167, depthmap, intrinsics_, resolution, rng=rng, info=impath)
+
             num_valid = (depthmap > 0.0).sum()
             if num_valid == 0 or (not np.isfinite(camera_pose).all()):
                 if self.full_video:
@@ -194,9 +217,11 @@ class ArkitScene(BaseManyViewDataset):
                         new_idx = rng.integers(0, self.__len__()-1)
                         return self._get_views(new_idx, resolution, rng)
                     return self._get_views(idx, resolution, rng, attempts+1)
-            
+            assert rgb_image.shape[:2] == image_167.shape[:2], \
+                f"Image shape mismatch after cropping: {rgb_image.shape} vs {image_167.shape}"
             views.append(dict(
                 img=rgb_image,
+                image_167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,
@@ -206,14 +231,11 @@ class ArkitScene(BaseManyViewDataset):
             ))
         return views
 
+
 if __name__ == "__main__":
 
-    num_frames=5
+    num_frames = 5
     print('loading dataset')
 
-    dataset = ArkitScene(split='train', ROOT="./data/arkit_lowres", resolution=224, num_seq=100, max_thresh=100)
-            
-
-        
-
-      
+    dataset = ArkitScene(split='train', ROOT="./data/arkit_lowres",
+                         resolution=224, num_seq=100, max_thresh=100)
