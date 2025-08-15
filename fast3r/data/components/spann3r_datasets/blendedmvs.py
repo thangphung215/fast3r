@@ -198,7 +198,6 @@ class BlendMVS(BaseManyViewDataset):
             campath = osp.join(cam_path, im_idx.replace('.jpg', '_cam.txt'))
 
             rgb_image = imread_cv2(impath)
-            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
             depthmap = imread_cv2(depthpath, cv2.IMREAD_UNCHANGED)
             depthmap = np.nan_to_num(depthmap.astype(np.float32), 0.0)
 
@@ -217,8 +216,8 @@ class BlendMVS(BaseManyViewDataset):
                 new_idx = rng.integers(0, self.__len__()-1)
                 return self._get_views(new_idx, resolution, rng)
 
-            rgb_image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, image_167, depthmap, intrinsics, resolution, rng=rng, info=impath)
+            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
 
             input_depth_max = depthmap.max()
             if input_depth_max > max_depth_max:
@@ -243,7 +242,6 @@ class BlendMVS(BaseManyViewDataset):
 
             views.append(dict(
                 img=rgb_image,
-                image_167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,

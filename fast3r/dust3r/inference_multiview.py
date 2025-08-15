@@ -30,7 +30,7 @@ def loss_of_one_batch(
         for (
             name
         ) in (
-            "img image_167 pts3d valid_mask camera_pose camera_intrinsics F_matrix corres".split()
+            "img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres".split()
         ):  # pseudo_focal
             if name not in view:
                 continue

@@ -194,9 +194,6 @@ class ArkitScene(BaseManyViewDataset):
                 return self._get_views(new_idx, resolution, rng)
 
             rgb_image = imread_cv2(impath)
-            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
-            assert rgb_image.shape[:2] == image_167.shape[:2], \
-                f"Image shape mismatch: {rgb_image.shape} vs {image_167.shape}"
             depthmap = imread_cv2(depthpath, cv2.IMREAD_UNCHANGED)
             depthmap = np.nan_to_num(depthmap.astype(np.float32), 0.0) / 1000.0
 
@@ -204,8 +201,8 @@ class ArkitScene(BaseManyViewDataset):
             # gl to cv
             camera_pose[:, 1:3] *= -1.0
 
-            rgb_image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, image_167, depthmap, intrinsics_, resolution, rng=rng, info=impath)
+            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, depthmap, intrinsics_, resolution, rng=rng, info=impath)
 
             num_valid = (depthmap > 0.0).sum()
             if num_valid == 0 or (not np.isfinite(camera_pose).all()):
@@ -217,11 +214,8 @@ class ArkitScene(BaseManyViewDataset):
                         new_idx = rng.integers(0, self.__len__()-1)
                         return self._get_views(new_idx, resolution, rng)
                     return self._get_views(idx, resolution, rng, attempts+1)
-            assert rgb_image.shape[:2] == image_167.shape[:2], \
-                f"Image shape mismatch after cropping: {rgb_image.shape} vs {image_167.shape}"
             views.append(dict(
                 img=rgb_image,
-                image_167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,

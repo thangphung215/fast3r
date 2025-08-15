@@ -129,23 +129,17 @@ class ARKitScenes_Multiview(BaseStereoViewDataset):
             # Load RGB image
             rgb_image = imread_cv2(
                 osp.join(scene_dir, 'vga_wide', basename.replace('.png', '.jpg')))
-            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
-            assert rgb_image.shape[:2] == image_167.shape[:2], \
-                f"Image shape mismatch: {rgb_image.shape} vs {image_167.shape}"
             # Load depthmap
             depthmap = imread_cv2(
                 osp.join(scene_dir, 'lowres_depth', basename), cv2.IMREAD_UNCHANGED)
             depthmap = depthmap.astype(np.float32) / 1000
             depthmap[~np.isfinite(depthmap)] = 0  # invalid
 
-            rgb_image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, image_167, depthmap, intrinsics, resolution, rng=rng, info=view_idx)
+            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=view_idx)
 
-            assert rgb_image.size == image_167.size, \
-                f"Image and 167px image must have the same size after cropping, got {rgb_image.size} and {image_167.size} for view={view_idx}"
             views.append(dict(
                 img=rgb_image,
-                image_167=image_167,
                 depthmap=depthmap.astype(np.float32),
                 camera_pose=camera_pose.astype(np.float32),
                 camera_intrinsics=intrinsics.astype(np.float32),

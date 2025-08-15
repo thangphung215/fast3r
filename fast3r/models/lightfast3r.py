@@ -815,15 +815,12 @@ class LightFast3Rv2(nn.Module,
         encoded_feats, shapes = [], []
         for view in views:
             img = view["img"]
-            img167 = view.get("image_167")  # optional 167px image
-            assert img.shape == img167.shape, \
-                f"Image and 167px image must have the same shape, got {img.shape} and {img167.shape}"
             true_shape = view.get(
                 "true_shape", torch.tensor(img.shape[-2:])[None].repeat(B, 1)
             )
 
             # CNN encoder returns spatial features directly
-            feat = self.encoder(img, img167)  # B x C x H x W
+            feat = self.encoder(img)  # B x C x H x W
             # feat = feat.view(
             #     B, feat.shape[1], -1).transpose(1, 2)
             encoded_feats.append(feat)

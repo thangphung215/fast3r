@@ -141,12 +141,8 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_cloc
             continue
         img = exif_transpose(PIL.Image.open(
             os.path.join(root, path))).convert("RGB")
-        image_167 = PIL.Image.open(os.path.join(root, path))
-        image_167 = exif_transpose(
-            crop_and_resize_blendedmvs_pillow(image_167)).convert("RGB")
         if rotate_clockwise_90:
             img = img.rotate(-90, expand=True)
-            image_167 = image_167.rotate(-90, expand=True)
             
         if crop_to_landscape:
             # Crop to a landscape aspect ratio (e.g., 16:9)
@@ -170,33 +166,28 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_cloc
                 right = width
 
             img = img.crop((left, top, right, bottom))
-            image_167 = image_167.crop((left, top, right, bottom))
             
 
         W1, H1 = img.size
         if size == 224:
             # resize short side to 224 (then crop)
             img = _resize_pil_image(img, round(size * max(W1 / H1, H1 / W1)))
-            image_167 = _resize_pil_image(image_167, round(size * max(W1 / H1, H1 / W1)))
             
         else:
             # resize long side to 512
             img = _resize_pil_image(img, size)
-            image_167 = _resize_pil_image(image_167, size)
             
         W, H = img.size
         cx, cy = W // 2, H // 2
         if size == 224:
             half = min(cx, cy)
             img = img.crop((cx - half, cy - half, cx + half, cy + half))
-            image_167 = image_167.crop((cx - half, cy - half, cx + half, cy + half))
             
         else:
             halfw, halfh = ((2 * cx) // 16) * 8, ((2 * cy) // 16) * 8
             if not (square_ok) and W == H:
                 halfh = 3 * halfw / 4
             img = img.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
-            image_167 = image_167.crop((cx - halfw, cy - halfh, cx + halfw, cy + halfh))
             
 
         W2, H2 = img.size
@@ -205,7 +196,6 @@ def load_images(folder_or_list, size, square_ok=False, verbose=True, rotate_cloc
         imgs.append(
             dict(
                 img=ImgNorm(img)[None],
-                image_167=ImgNorm(image_167)[None],
                 true_shape=np.int32([img.size[::-1]]),
                 idx=len(imgs),
                 instance=str(len(imgs)),

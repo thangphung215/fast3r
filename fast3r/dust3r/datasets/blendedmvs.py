@@ -75,7 +75,6 @@ class BlendedMVS (BaseStereoViewDataset):
         for view_index in [img1, img2]:
             impath = f"{view_index:08n}"
             image = imread_cv2(osp.join(seq_path, impath + ".jpg"))
-            image_167 = self.crop_and_resize_blendedmvs(image)
             depthmap = imread_cv2(osp.join(seq_path, impath + ".exr"))
             camera_params = np.load(osp.join(seq_path, impath + ".npz"))
 
@@ -84,13 +83,12 @@ class BlendedMVS (BaseStereoViewDataset):
             camera_pose[:3, :3] = camera_params['R_cam2world']
             camera_pose[:3, 3] = camera_params['t_cam2world']
 
-            image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
-                image, image_167, depthmap, intrinsics, resolution, rng,
+            image, depthmap, intrinsics = self._crop_resize_if_necessary(
+                image, depthmap, intrinsics, resolution, rng,
                 info=(seq_path, impath))
 
             views.append(dict(
                 img=image,
-                img167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,  # cam2world
                 camera_intrinsics=intrinsics,

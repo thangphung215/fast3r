@@ -111,7 +111,6 @@ class BaseStereoViewDataset(EasyDataset):
             width, height = view["img"].size
             view["true_shape"] = np.int32((height, width))
             view["img"] = self.transform(view["img"])
-            view['image_167'] = self.transform(view['image_167'])
 
             assert "camera_intrinsics" in view
             if "camera_pose" not in view:
@@ -166,7 +165,7 @@ class BaseStereoViewDataset(EasyDataset):
             self._resolutions.append((width, height))
 
     def _crop_resize_if_necessary(
-        self, image, image_167, depthmap, intrinsics, resolution, rng=None,
+        self, image, depthmap, intrinsics, resolution, rng=None,
         info=None
     ):
         """This function:
@@ -175,7 +174,6 @@ class BaseStereoViewDataset(EasyDataset):
         """
         if not isinstance(image, PIL.Image.Image):
             image = PIL.Image.fromarray(image)
-            image_167 = PIL.Image.fromarray(image_167)
 
         # downscale with lanczos interpolation so that image.size == resolution
         # cropping centered on the principal point
@@ -189,11 +187,9 @@ class BaseStereoViewDataset(EasyDataset):
         l, t = cx - min_margin_x, cy - min_margin_y
         r, b = cx + min_margin_x, cy + min_margin_y
         crop_bbox = (l, t, r, b)
-        image, image_167, depthmap, intrinsics = cropping.crop_image_depthmap(
-            image, image_167, depthmap, intrinsics, crop_bbox
+        image, depthmap, intrinsics = cropping.crop_image_depthmap(
+            image, depthmap, intrinsics, crop_bbox
         )
-        assert image.size == image_167.size, \
-            f"Image and 167px image must have the same size, got {image.size} and {image_167.size} for view={info}"
         # transpose the resolution if necessary
         W, H = image.size  # new size
         assert resolution[0] >= resolution[1]
@@ -209,11 +205,9 @@ class BaseStereoViewDataset(EasyDataset):
         target_resolution = np.array(resolution)
         if self.aug_crop > 1:
             target_resolution += rng.integers(0, self.aug_crop)
-        image, image_167, depthmap, intrinsics = cropping.rescale_image_depthmap(
-            image, image_167, depthmap, intrinsics, target_resolution
+        image, depthmap, intrinsics = cropping.rescale_image_depthmap(
+            image, depthmap, intrinsics, target_resolution
         )
-        assert image.size == image_167.size, \
-            f"Image and 167px image must have the same size after cropping, got {image.size} and {image_167.size} for view={info}"
         # actual cropping (if necessary) with bilinear interpolation
         intrinsics2 = cropping.camera_matrix_of_crop(
             intrinsics, image.size, resolution, offset_factor=0.5
@@ -221,12 +215,10 @@ class BaseStereoViewDataset(EasyDataset):
         crop_bbox = cropping.bbox_from_intrinsics_in_out(
             intrinsics, intrinsics2, resolution
         )
-        image, image_167, depthmap, intrinsics2 = cropping.crop_image_depthmap(
-            image, image_167, depthmap, intrinsics, crop_bbox
+        image, depthmap, intrinsics2 = cropping.crop_image_depthmap(
+            image, depthmap, intrinsics, crop_bbox
         )
-        assert image.size == image_167.size, \
-            f"Image and 167px image must have the same size after cropping, got {image.size} and {image_167.size} for view={info}"
-        return image, image_167, depthmap, intrinsics2
+        return image, depthmap, intrinsics2
 
 
 def is_good_type(key, v):
@@ -255,7 +247,6 @@ def transpose_to_landscape(view):
         # rectify portrait to landscape
         assert view["img"].shape == (3, height, width)
         view["img"] = view["img"].swapaxes(1, 2)
-        view["image_167"] = view["image_167"].swapaxes(1, 2)
 
         assert view["valid_mask"].shape == (height, width)
         view["valid_mask"] = view["valid_mask"].swapaxes(0, 1)
