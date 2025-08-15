@@ -691,8 +691,8 @@ class LightFast3Rv2(nn.Module,
             feature_dim = 256
             last_dim = feature_dim // 2
             out_nchan = 3
-            ed = self.encoder_args["embed_dim"]
-            dd = self.decoder_args["embed_dim"]
+            ed = self.encoder_args["embed_dim"]  # 1024
+            dd = self.decoder_args["embed_dim"]  # 768
             return PixelwiseTaskWithDPT(
                 num_channels=out_nchan + has_conf,
                 feature_dim=feature_dim,
@@ -849,10 +849,12 @@ class LightFast3Rv2(nn.Module,
 
         # encode the images --> B,S,D
         encode_images_start_time = time.time()
-        # import ipdb
-        # ipdb.set_trace()
+        
         # encoded_feats, positions, shapes = self._encode_images(views)
         encoded_feats, shapes = self._encode_images(views)
+        # print(f"Encoded features shape: ")
+        # for i, encoded_feat in enumerate(encoded_feats): 
+        #     print(f"encoded_feats[{i}].shape: {encoded_feat.shape}")  # 1,768,1024
         encode_images_end_time = time.time()
         if profiling:
             torch.cuda.synchronize()
@@ -871,8 +873,8 @@ class LightFast3Rv2(nn.Module,
         # Create image IDs for each patch
         pos_emb_start_time = time.time()
         num_images = len(views)
+
         # B, _, _ = encoded_feats[0].shape
-        # import ipdb; ipdb.set_trace()
         B = len(encoded_feats[0])
 
         different_resolution_across_views = not all(
@@ -886,12 +888,18 @@ class LightFast3Rv2(nn.Module,
         for i, encoded_feat in enumerate(encoded_feats):
             # Get the number of patches for this image
             num_patches = encoded_feat.shape[1]
+            # print(f"Image {i} has {num_patches} patches")
             # Extend the image_ids list with the current image ID repeated num_patches times
             image_ids.extend([i] * num_patches)
+            # print(f"Current image_ids length: {len(image_ids)}")
+
+        # print(f"Total image_ids length: {len(image_ids)}")
+        # print(f"Image IDs: {image_ids}")
 
         # Repeat the image_ids list B times and reshape it to match the expected shape
         image_ids = torch.tensor(
             image_ids * B).reshape(B, -1).to(encoded_feats[0].device)
+        # print(f"image_ids shape: {image_ids.shape}")
         if profiling:
             pos_emb_time = time.time() - pos_emb_start_time
             profiling_info["pos_emb_time"] = pos_emb_time
@@ -901,9 +909,12 @@ class LightFast3Rv2(nn.Module,
         if profiling:
             torch.cuda.synchronize()
             decoder_start_time = time.time()
+            
         dec_output = self.decoder(encoded_feats, image_ids)
-        # import ipdb
-        # ipdb.set_trace()
+        # print(f"dec_output shape: ")
+        # for i, dec_out in enumerate(dec_output):
+        #     print(f"dec_output[{i}].shape: {dec_out.shape}")
+
         if profiling:
             torch.cuda.synchronize()
             decoder_time = time.time() - decoder_start_time
@@ -919,6 +930,7 @@ class LightFast3Rv2(nn.Module,
         head_prepare_input_start_time = time.time()
         # Prepare the gathered outputs for each layer
         if different_resolution_across_views or self.training:
+            # print("Different resolution across views or training mode")
             # Precompute the number of patches per image
             num_patches_list = [encoded_feat.shape[1]
                                 for encoded_feat in encoded_feats]
@@ -934,9 +946,11 @@ class LightFast3Rv2(nn.Module,
                     # gathered_output: (B, num_patches_list[img_id], D)
                     gathered_outputs_list[img_id].append(gathered_output)
         else:
+            # print("Same resolution across views")
             # All images have the same number of patches
             P_patches = encoded_feats[0].shape[1]
             gathered_outputs_list = []
+            
             for layer_output in dec_output:
                 # layer_output: (B, num_images * P_patches, D)
                 # Rearrange to (num_images * B, P_patches, D)
@@ -946,6 +960,7 @@ class LightFast3Rv2(nn.Module,
                     num_images=num_images,
                     P_patches=P_patches
                 )
+                # print(f"layer_output shape after rearrange: {layer_output.shape}")
                 gathered_outputs_list.append(layer_output)
 
         if profiling:
@@ -955,7 +970,9 @@ class LightFast3Rv2(nn.Module,
 
         head_forward_start_time = time.time()
         with profiler.record_function("head: forward pass"):
+            # print("Forward pass through the head")
             if different_resolution_across_views or self.training:
+                # print("Processing views sequentially due to different resolutions or training mode")
                 # If the views have different resolutions, we cannot batch the views together
                 # or if we are in training mode, we can batch the views together, but we dont want to get OOM so we process them sequentially
                 # Forward pass for each view separately
@@ -963,9 +980,11 @@ class LightFast3Rv2(nn.Module,
                 for img_id in range(num_images):
                     img_result = self.head(
                         gathered_outputs_list[img_id], shapes[img_id])
+                    # print(f"img_result shape for image {img_id}: {img_result['pts3d'].shape}")
                     if self.local_head:
                         local_img_result = self.local_head(
                             gathered_outputs_list[img_id], shapes[img_id])
+                        # print(f"local_img_result shape for image {img_id}: {local_img_result['pts3d'].shape}")
 
                     # Re-map the results back to the original batch and image order
                     for key in img_result.keys():
@@ -980,6 +999,7 @@ class LightFast3Rv2(nn.Module,
                         if 'conf' in local_img_result:
                             final_results[img_id]['conf_local'] = local_img_result['conf']
             else:  # if we are in inference mode and all views have the same resolution, we can batch the views together
+                # print("Processing views in parallel due to same resolution")
                 concatenated_shapes = torch.cat(shapes, dim=0)
 
                 # Split concatenated_shapes into chunks outside the loop
@@ -996,9 +1016,12 @@ class LightFast3Rv2(nn.Module,
                     # Split the layer_output along (num_images * B) dimension
                     split_layer_outputs = torch.split(
                         layer_output, self.max_parallel_views_for_head, dim=0)
+                    # print(f"Number of split_layer_outputs: {len(split_layer_outputs)}")
+                    # print(f"Shape of each split_layer_output: {split_layer_outputs[0].shape}")
                     for chunk_idx, split_output in enumerate(split_layer_outputs):
                         chunked_gathered_outputs_list[chunk_idx].append(
                             split_output)
+                        # print(f"chunked_gathered_outputs_list[{chunk_idx}] shape: {split_output.shape}")
 
                 # Initialize lists to hold results for each chunk
                 result_chunks = []
@@ -1055,6 +1078,9 @@ class LightFast3Rv2(nn.Module,
             print(
                 f"total Fast3R forward time: {end_time - encode_images_start_time}")
 
+        # for key in final_results[0].keys():
+        #     if isinstance(final_results[0][key], torch.Tensor):
+        #         print(f"final_results[{key}].shape: {final_results[0][key].shape}")
         if profiling:
             return final_results, profiling_info
         else:
@@ -1202,6 +1228,44 @@ class MobileNetV4(nn.Module):
         return [info['num_chs'] for info in self.feature_info]
 
 
+# class MobileNetV4_167(nn.Module):
+#     def __init__(self, embed_dim=768):
+#         super(MobileNetV4_167, self).__init__()
+#         self.embed_dim = embed_dim
+#         self.backbone = timm.create_model(
+#             'mobilenetv4_conv_large.e500_r256_in1k',
+#             pretrained=True, features_only=True)
+
+#         self.conv = nn.Conv2d(192, int(self.embed_dim),
+#                               kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(int(self.embed_dim))
+
+#     def forward(self, image, image167):
+#         """
+#         Forward pass through the encoder
+#         Returns multi-scale features from different stages
+#         """
+#         x1 = self.backbone(image)[-2]  # [1, 192, 32, 24]
+#         x1_167 = self.backbone(image167)[-2]  # [1, 192, 32, 24]
+#         # print(image.shape, image167.shape)
+#         # print(x1.shape, x1_167.shape)
+#         # import ipdb; ipdb.set_trace()
+#         x2 = self.conv(x1)  # [1, 1024, 32, 24]
+#         x2 = self.bn(x2)  # [1, 1024, 32, 24]
+#         x2_167 = self.conv(x1_167)  # [1, 1024, 32, 24]
+#         x2_167 = self.bn(x2_167)  # [1, 1024, 32, 24]
+#         # Concatenate the features from both images along the channel dimension
+#         # x2_mix = torch.cat((x2, x2_167), dim=1)
+#         x2_mix = x2 + x2_167  # [1, 1024, 32, 24]
+#         features = x2_mix.view(x2_mix.shape[0], -1, x2_mix.shape[1])
+#         # print(features.shape)
+#         return features  # torch.Size([1, 768, 1024])
+
+#     def get_feature_dims(self):
+#         """Get the number of channels at each stage"""
+#         return [info['num_chs'] for info in self.feature_info]
+
+
 class MobileNetV4_167(nn.Module):
     def __init__(self, embed_dim=768):
         super(MobileNetV4_167, self).__init__()
@@ -1210,25 +1274,64 @@ class MobileNetV4_167(nn.Module):
             'mobilenetv4_conv_large.e500_r256_in1k',
             pretrained=True, features_only=True)
 
-        self.conv = nn.Conv2d(192, int(self.embed_dim),
+        self.conv2 = nn.Conv2d(192, int(self.embed_dim//4),
                               kernel_size=3, stride=1, padding=1)
-
+        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv3 = nn.Conv2d(96, int(self.embed_dim//4),
+                              kernel_size=4, stride=2, padding=1)
+        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv4 = nn.Conv2d(48, int(self.embed_dim//4),
+                              kernel_size=6, stride=4, padding=1)
+        self.bn4 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv5 = nn.Conv2d(24, int(self.embed_dim//4),
+                              kernel_size=10, stride=8, padding=1)
+        self.bn5 = nn.BatchNorm2d(int(self.embed_dim//4))
+        
     def forward(self, image, image167):
         """
         Forward pass through the encoder
         Returns multi-scale features from different stages
         """
-        x1 = self.backbone(image)[-2]  # [1, 192, 32, 24]
-        x1_167 = self.backbone(image167)[-2]  # [1, 192, 32, 24]
+        # torch.Size([1, 24, 192,256])
+        # torch.Size([1, 48, 96, 128])
+        # torch.Size([1, 96, 48, 64])
+        # torch.Size([1, 192, 24, 32])
+        # torch.Size([1, 960, 12, 16])
+        # [print(aa.shape) for aa in self.backbone(image)]
+        x2 = self.backbone(image)[-2]  # [1, 192, 24, 32]
+        x2_167 = self.backbone(image167)[-2]  # [1, 192, 24, 32]
+        
+        x3 = self.backbone(image)[-3]  # [1,96,48,64]
+        x3_167 = self.backbone(image167)[-3]  # [1,96,48,64]
+        
+        x4 = self.backbone(image)[-4]  # [1, 48, 96, 128]
+        x4_167 = self.backbone(image167)[-4]  # [1, 48, 96, 128]
+        
+        x5 = self.backbone(image)[-5]  # [1, 24, 192, 256]
+        x5_167 = self.backbone(image167)[-5]  # [1, 24, 192, 256]
         # print(image.shape, image167.shape)
         # print(x1.shape, x1_167.shape)
         # import ipdb; ipdb.set_trace()
-        x2 = self.conv(x1)  # [1, 512, 32, 24]
-        x2_167 = self.conv(x1_167)  # [1, 512, 32, 24]
+        x2_c = self.bn2(self.conv2(x2))  # [1, 256, 32, 24]
+        x2_167_c = self.bn2(self.conv2(x2_167))  # [1, 256, 32, 24]
+        x3_c = self.bn3(self.conv3(x3))  # [1, 256, 32, 24]
+        x3_167_c = self.bn3(self.conv3(x3_167))  # [1, 256, 32, 24]
+        x4_c = self.bn4(self.conv4(x4))  # [1, 256, 32, 24]
+        x4_167_c = self.bn4(self.conv4(x4_167))  # [1, 256, 32, 24]
+        x5_c = self.bn5(self.conv5(x5))  # [1, 256, 32, 24]
+        x5_167_c = self.bn5(self.conv5(x5_167))  # [1, 256, 32, 24]
         # Concatenate the features from both images along the channel dimension
+        # import ipdb; ipdb.set_trace()
         # x2_mix = torch.cat((x2, x2_167), dim=1)
-        x2_mix = x2 + x2_167  # [1, 512, 32, 24]
-        features = x2_mix.view(x2_mix.shape[0], -1, x2_mix.shape[1])
+        x2_mix = x2_c + x2_167_c  # [1,256, 32, 24]
+        x3_mix = x3_c + x3_167_c  # [1,256, 32, 24]
+        x4_mix = x4_c + x4_167_c  # [1,256, 32, 24]
+        x5_mix = x5_c + x5_167_c  # [1,256, 32, 24]
+        
+        # Concatenate all features along the channel dimension
+        # print(f"x2_mix shape: {x2_mix.shape}, x3_mix shape: {x3_mix.shape}, x4_mix shape: {x4_mix.shape}, x5_mix shape: {x5_mix.shape}")
+        x2345_mix = torch.cat((x2_mix, x3_mix, x4_mix, x5_mix), dim=1)  # [1, 1024, 32, 24]
+        features = x2345_mix.view(x2345_mix.shape[0], -1, x2345_mix.shape[1])
         # print(features.shape)
         return features  # torch.Size([1, 768, 1024])
 
@@ -1398,6 +1501,7 @@ class Fast3RDecoderCNN2(nn.Module):
         """
         x = torch.cat(
             encoded_feats, dim=1)  # concate along the patch dimension
+        # (numviews, 1, 768, 1024) -> 
 
         final_output = [x]  # before projection
 

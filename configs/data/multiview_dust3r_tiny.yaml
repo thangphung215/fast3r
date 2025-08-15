@@ -1,5 +1,5 @@
 # Define the common data root and number of views
-data_root: /path/to/dust3r_data
+data_root: /home/thangphung/workspace/fast3r/data
 num_views: 4
 
 data_module:
