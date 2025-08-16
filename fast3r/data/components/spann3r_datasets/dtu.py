@@ -114,6 +114,19 @@ class DTU(BaseManyViewDataset):
         
         return list_idx
  
+    def crop_and_resize_blendedmvs(self, img, ratio=10/6):
+        h, w = img.shape[:2]
+        center = (w // 2, h // 2)
+        new_w = int(w / ratio)
+        new_h = int(h / ratio)
+        cropped_img = img[center[1] - new_h // 2:center[1] + new_h // 2,
+                          center[0] - new_w // 2:center[0] + new_w // 2]
+        # Resize to original size
+        resized_img = cv2.resize(
+            cropped_img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        return resized_img
+    
     def _get_views(self, idx, resolution, rng): 
         scene_id = self.scene_list[idx // self.num_seq]
         seq_id = idx % self.num_seq
@@ -145,6 +158,7 @@ class DTU(BaseManyViewDataset):
             maskpath = osp.join(mask_path, im_idx.replace('.jpg', '.png'))
 
             rgb_image = imread_cv2(impath)
+            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
             depthmap = np.load(depthpath)
             depthmap = np.nan_to_num(depthmap.astype(np.float32), 0.0)
 
@@ -163,11 +177,12 @@ class DTU(BaseManyViewDataset):
             intrinsics = cur_intrinsics[:3, :3]
             camera_pose = np.linalg.inv(camera_pose)
 
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath)
+            rgb_image, image_167 ,depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, image_167, depthmap, intrinsics, resolution, rng=rng, info=impath)
             
             views.append(dict(
                 img=rgb_image,
+                image_167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,
