@@ -1,4 +1,7 @@
 set -e 
+# pip install -r requirements.txt
+# pip install efficientnet-pytorch timm transformers
+# 5090 pip3 install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu129
 
 export SLURM_NODEID=0
 export SLURM_LOCALID=0  # Usually 0 for single-process local runs
