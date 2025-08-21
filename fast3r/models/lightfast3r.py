@@ -1274,18 +1274,30 @@ class MobileNetV4_167(nn.Module):
             'mobilenetv4_conv_large.e500_r256_in1k',
             pretrained=True, features_only=True)
 
-        self.conv2 = nn.Conv2d(192, int(self.embed_dim//4),
+        self.conv2 = nn.Conv2d(192, int(self.embed_dim//8),
                               kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//4))
-        self.conv3 = nn.Conv2d(96, int(self.embed_dim//4),
+        self.conv2_167 = nn.Conv2d(192, int(self.embed_dim//8),
+                              kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.bn2_167 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.conv3 = nn.Conv2d(96, int(self.embed_dim//8),
                               kernel_size=4, stride=2, padding=1)
-        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//4))
-        self.conv4 = nn.Conv2d(48, int(self.embed_dim//4),
+        self.conv3_167 = nn.Conv2d(96, int(self.embed_dim//8),
+                              kernel_size=4, stride=2, padding=1)
+        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.bn3_167 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.conv4 = nn.Conv2d(48, int(self.embed_dim//8),
                               kernel_size=6, stride=4, padding=1)
-        self.bn4 = nn.BatchNorm2d(int(self.embed_dim//4))
-        self.conv5 = nn.Conv2d(24, int(self.embed_dim//4),
+        self.conv4_167 = nn.Conv2d(48, int(self.embed_dim//8),
+                              kernel_size=6, stride=4, padding=1)
+        self.bn4 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.bn4_167 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.conv5 = nn.Conv2d(24, int(self.embed_dim//8),
                               kernel_size=10, stride=8, padding=1)
-        self.bn5 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv5_167 = nn.Conv2d(24, int(self.embed_dim//8),
+                              kernel_size=10, stride=8, padding=1)
+        self.bn5 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.bn5_167 = nn.BatchNorm2d(int(self.embed_dim//8))
         
     def forward(self, image, image167):
         """
@@ -1313,20 +1325,25 @@ class MobileNetV4_167(nn.Module):
         # print(x1.shape, x1_167.shape)
         # import ipdb; ipdb.set_trace()
         x2_c = self.bn2(self.conv2(x2))  # [1, 256, 32, 24]
-        x2_167_c = self.bn2(self.conv2(x2_167))  # [1, 256, 32, 24]
+        x2_167_c = self.bn2_167(self.conv2_167(x2_167))  # [1, 256, 32, 24]
         x3_c = self.bn3(self.conv3(x3))  # [1, 256, 32, 24]
-        x3_167_c = self.bn3(self.conv3(x3_167))  # [1, 256, 32, 24]
+        x3_167_c = self.bn3_167(self.conv3_167(x3_167))  # [1, 256, 32, 24]
         x4_c = self.bn4(self.conv4(x4))  # [1, 256, 32, 24]
-        x4_167_c = self.bn4(self.conv4(x4_167))  # [1, 256, 32, 24]
+        x4_167_c = self.bn4_167(self.conv4_167(x4_167))  # [1, 256, 32, 24]
         x5_c = self.bn5(self.conv5(x5))  # [1, 256, 32, 24]
-        x5_167_c = self.bn5(self.conv5(x5_167))  # [1, 256, 32, 24]
+        x5_167_c = self.bn5_167(self.conv5_167(x5_167))  # [1, 256, 32, 24]
         # Concatenate the features from both images along the channel dimension
         # import ipdb; ipdb.set_trace()
         # x2_mix = torch.cat((x2, x2_167), dim=1)
-        x2_mix = x2_c + x2_167_c  # [1,256, 32, 24]
-        x3_mix = x3_c + x3_167_c  # [1,256, 32, 24]
-        x4_mix = x4_c + x4_167_c  # [1,256, 32, 24]
-        x5_mix = x5_c + x5_167_c  # [1,256, 32, 24]
+        # x2_mix = x2_c + x2_167_c  # [1,256, 32, 24]
+        # x3_mix = x3_c + x3_167_c  # [1,256, 32, 24]
+        # x4_mix = x4_c + x4_167_c  # [1,256, 32, 24]
+        # x5_mix = x5_c + x5_167_c  # [1,256, 32, 24]
+        
+        x2_mix = torch.cat((x2_c, x2_167_c), dim=1)  # [1, 256, 32, 24]
+        x3_mix = torch.cat((x3_c, x3_167_c), dim=1)  # [1, 256, 32, 24]
+        x4_mix = torch.cat((x4_c, x4_167_c), dim=1)  # [1, 256, 32, 24]
+        x5_mix = torch.cat((x5_c, x5_167_c), dim=1)  # [1, 256, 32, 24]
         
         # Concatenate all features along the channel dimension
         # print(f"x2_mix shape: {x2_mix.shape}, x3_mix shape: {x3_mix.shape}, x4_mix shape: {x4_mix.shape}, x5_mix shape: {x5_mix.shape}")

@@ -129,6 +129,21 @@ class Co3d_Multiview(BaseStereoViewDataset):
 
         raise ValueError(f"Exceeded {max_scene_retries=}. No valid views found.")
 
+    def crop_and_resize_blendedmvs(self, img, ratio=10/6):
+        raw_img = img.copy()
+        # raw_img = deepcopy(img)
+        h, w = img.shape[:2]
+        center = (w // 2, h // 2)
+        new_w = int(w / ratio)
+        new_h = int(h / ratio)
+        cropped_img = raw_img[center[1] - new_h // 2:center[1] + new_h // 2,
+                              center[0] - new_w // 2:center[0] + new_w // 2]
+        # Resize to original size
+        resized_img = cv2.resize(
+            cropped_img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        return resized_img
+    
     def _load_view_data(self, obj, instance, image_pool, im_idx, resolution, rng):
         """Load the data for a single view, including image, depth, and camera parameters."""
         try:
@@ -139,6 +154,7 @@ class Co3d_Multiview(BaseStereoViewDataset):
             intrinsics = input_metadata["camera_intrinsics"].astype(np.float32)
 
             rgb_image = imread_cv2(impath)
+            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
             depthmap = imread_cv2(impath.replace("images", "depths") + ".geometric.png", cv2.IMREAD_UNCHANGED)
             depthmap = (depthmap.astype(np.float32) / 65535) * np.nan_to_num(input_metadata["maximum_depth"])
 
@@ -150,8 +166,8 @@ class Co3d_Multiview(BaseStereoViewDataset):
                 depthmap *= maskmap
 
             # Crop, resize, and validate
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics, resolution, rng=rng, info=impath
+            rgb_image,image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image,image_167, depthmap, intrinsics, resolution, rng=rng, info=impath
             )
             if (depthmap > 0.0).sum() == 0:
                 # Mark as invalid and return None if no valid depth
@@ -160,6 +176,7 @@ class Co3d_Multiview(BaseStereoViewDataset):
 
             return dict(
                 img=rgb_image,
+                image_167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,
