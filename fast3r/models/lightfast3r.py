@@ -1273,31 +1273,22 @@ class MobileNetV4_167(nn.Module):
         self.backbone = timm.create_model(
             'mobilenetv4_conv_large.e500_r256_in1k',
             pretrained=True, features_only=True)
+        self.backbone_167 = timm.create_model(
+            'mobilenetv4_conv_large.e500_r256_in1k',
+            pretrained=True, features_only=True)
 
-        self.conv2 = nn.Conv2d(192, int(self.embed_dim//8),
+        self.conv2 = nn.Conv2d(192, int(self.embed_dim//4),
                               kernel_size=3, stride=1, padding=1)
-        self.conv2_167 = nn.Conv2d(192, int(self.embed_dim//8),
-                              kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.bn2_167 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.conv3 = nn.Conv2d(96, int(self.embed_dim//8),
+        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv3 = nn.Conv2d(96, int(self.embed_dim//4),
                               kernel_size=4, stride=2, padding=1)
-        self.conv3_167 = nn.Conv2d(96, int(self.embed_dim//8),
-                              kernel_size=4, stride=2, padding=1)
-        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.bn3_167 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.conv4 = nn.Conv2d(48, int(self.embed_dim//8),
+        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv4 = nn.Conv2d(48, int(self.embed_dim//4),
                               kernel_size=6, stride=4, padding=1)
-        self.conv4_167 = nn.Conv2d(48, int(self.embed_dim//8),
-                              kernel_size=6, stride=4, padding=1)
-        self.bn4 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.bn4_167 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.conv5 = nn.Conv2d(24, int(self.embed_dim//8),
+        self.bn4 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.conv5 = nn.Conv2d(24, int(self.embed_dim//4),
                               kernel_size=10, stride=8, padding=1)
-        self.conv5_167 = nn.Conv2d(24, int(self.embed_dim//8),
-                              kernel_size=10, stride=8, padding=1)
-        self.bn5 = nn.BatchNorm2d(int(self.embed_dim//8))
-        self.bn5_167 = nn.BatchNorm2d(int(self.embed_dim//8))
+        self.bn5 = nn.BatchNorm2d(int(self.embed_dim//4))
         
     def forward(self, image, image167):
         """
@@ -1310,28 +1301,30 @@ class MobileNetV4_167(nn.Module):
         # torch.Size([1, 192, 24, 32])
         # torch.Size([1, 960, 12, 16])
         # [print(aa.shape) for aa in self.backbone(image)]
-        x2 = self.backbone(image)[-2]  # [1, 192, 24, 32]
-        x2_167 = self.backbone(image167)[-2]  # [1, 192, 24, 32]
+        xall = self.backbone(image)
+        xall_167 = self.backbone_167(image167)
+        x2 = xall[-2]  # [1, 192, 24, 32]
+        x2_167 = xall_167[-2]  # [1, 192, 24, 32]
         
-        x3 = self.backbone(image)[-3]  # [1,96,48,64]
-        x3_167 = self.backbone(image167)[-3]  # [1,96,48,64]
+        x3 = xall[-3]  # [1,96,48,64]
+        x3_167 = xall_167[-3]  # [1,96,48,64]
         
-        x4 = self.backbone(image)[-4]  # [1, 48, 96, 128]
-        x4_167 = self.backbone(image167)[-4]  # [1, 48, 96, 128]
+        x4 = xall[-4]  # [1, 48, 96, 128]
+        x4_167 = xall_167[-4]  # [1, 48, 96, 128]
         
-        x5 = self.backbone(image)[-5]  # [1, 24, 192, 256]
-        x5_167 = self.backbone(image167)[-5]  # [1, 24, 192, 256]
+        x5 = xall[-5]  # [1, 24, 192, 256]
+        x5_167 = xall_167[-5]  # [1, 24, 192, 256]
         # print(image.shape, image167.shape)
         # print(x1.shape, x1_167.shape)
         # import ipdb; ipdb.set_trace()
-        x2_c = self.bn2(self.conv2(x2))  # [1, 256, 32, 24]
-        x2_167_c = self.bn2_167(self.conv2_167(x2_167))  # [1, 256, 32, 24]
-        x3_c = self.bn3(self.conv3(x3))  # [1, 256, 32, 24]
-        x3_167_c = self.bn3_167(self.conv3_167(x3_167))  # [1, 256, 32, 24]
-        x4_c = self.bn4(self.conv4(x4))  # [1, 256, 32, 24]
-        x4_167_c = self.bn4_167(self.conv4_167(x4_167))  # [1, 256, 32, 24]
-        x5_c = self.bn5(self.conv5(x5))  # [1, 256, 32, 24]
-        x5_167_c = self.bn5_167(self.conv5_167(x5_167))  # [1, 256, 32, 24]
+        x2_c = x2 # [1, 192, 32, 24]
+        x2_167_c = x2_167 # [1, 192, 32, 24]
+        x3_c = x3.reshape(x3.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 96*2*2, 32, 24]
+        x3_167_c = x3_167.reshape(x3_167.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 96*2*2, 32, 24]
+        x4_c = x4.reshape(x4.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 48*4*4, 32, 24]
+        x4_167_c = x4_167.reshape(x4_167.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 48*4*4, 32, 24] 
+        x5_c = x5.reshape(x5.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 24*8*8, 32, 24]
+        x5_167_c = x5_167.reshape(x5_167.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 24*8*8, 32, 24]
         # Concatenate the features from both images along the channel dimension
         # import ipdb; ipdb.set_trace()
         # x2_mix = torch.cat((x2, x2_167), dim=1)
@@ -1340,14 +1333,10 @@ class MobileNetV4_167(nn.Module):
         # x4_mix = x4_c + x4_167_c  # [1,256, 32, 24]
         # x5_mix = x5_c + x5_167_c  # [1,256, 32, 24]
         
-        x2_mix = torch.cat((x2_c, x2_167_c), dim=1)  # [1, 256, 32, 24]
-        x3_mix = torch.cat((x3_c, x3_167_c), dim=1)  # [1, 256, 32, 24]
-        x4_mix = torch.cat((x4_c, x4_167_c), dim=1)  # [1, 256, 32, 24]
-        x5_mix = torch.cat((x5_c, x5_167_c), dim=1)  # [1, 256, 32, 24]
-        
         # Concatenate all features along the channel dimension
         # print(f"x2_mix shape: {x2_mix.shape}, x3_mix shape: {x3_mix.shape}, x4_mix shape: {x4_mix.shape}, x5_mix shape: {x5_mix.shape}")
-        x2345_mix = torch.cat((x2_mix, x3_mix, x4_mix, x5_mix), dim=1)  # [1, 1024, 32, 24]
+        # x2345_mix = torch.cat((x2_mix, x3_mix, x4_mix, x5_mix), dim=1)  # [1, 1024, 32, 24]
+        x2345_mix = torch.cat((x2_c, x2_167_c, x3_c, x3_167_c, x4_c, x4_167_c, x5_c, x5_167_c), dim=1)  # [1, 5760, 32, 24]
         features = x2345_mix.view(x2345_mix.shape[0], -1, x2345_mix.shape[1])
         # print(features.shape)
         return features  # torch.Size([1, 768, 1024])

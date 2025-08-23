@@ -42,7 +42,7 @@ optimizer:
 scheduler:
   _target_: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
   _partial_: true
-  warmup_epochs: 10
+  warmup_epochs: 5
   max_epochs: ${trainer.max_epochs}
   eta_min: 1e-06
 
@@ -50,12 +50,12 @@ net:
   _target_: fast3r.models.lightfast3r.LightFast3Rv2
   encoder_args:
     encoder_type: mobilenetv4_167
-    embed_dim: 1024
+    embed_dim: 5760
   decoder_args:
     decoder_type: fast3rcnn2
     random_image_idx_embedding: true
     image_idx_emb_dim: 128
-    enc_embed_dim: 1024
+    enc_embed_dim: 5760
     embed_dim: 768 
     depth: 12
   head_args:
