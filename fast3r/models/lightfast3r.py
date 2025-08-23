@@ -49,510 +49,6 @@ assert version.parse(hf_version_number) >= version.parse(
 
 
 
-
-class LightFast3R(nn.Module,
-                  huggingface_hub.PyTorchModelHubMixin,
-                  repo_url="https://github.com/facebookresearch/lightfast3r",
-                  tags=["image-to-3d"]
-                  ):
-    def __init__(
-        self,
-        encoder_args: dict,
-        decoder_args: dict,
-        head_args: dict,
-        freeze="none",
-    ):
-        super(LightFast3R, self).__init__()
-
-        self.encoder_args = OmegaConf.to_container(encoder_args) if isinstance(
-            encoder_args, DictConfig) else encoder_args
-        self.build_encoder(encoder_args)
-
-        self.decoder_args = OmegaConf.to_container(decoder_args) if isinstance(
-            decoder_args, DictConfig) else decoder_args
-        self.build_decoder(decoder_args)
-
-        self.head_args = OmegaConf.to_container(head_args) if isinstance(
-            head_args, DictConfig) else head_args
-        self.build_head(head_args)
-
-        # how many views to process in parallel in the head, used to avoid OOM
-        self.max_parallel_views_for_head = 25
-
-        self.set_freeze(freeze)
-
-    def build_encoder(self, encoder_args: dict):
-        # Initialize the encoder based on the encoder type
-        if encoder_args["encoder_type"] == "darknet53":
-            # Drop the encoder_type key
-            encoder_args = deepcopy(encoder_args)
-            encoder_args.pop("encoder_type")
-            # self.encoder = CroCoEncoder(**encoder_args)
-            self.encoder = LightDarkNet53(**encoder_args)
-        else:
-            raise ValueError(
-                f"Unsupported encoder type: {encoder_args['encoder_type']}")
-
-    def build_decoder(self, decoder_args: dict):
-        decoder_args["decoder_type"] = decoder_args.get(
-            'decoder_type', 'fast3r')  # default to fast3r if not specified
-        if decoder_args["decoder_type"] == 'fast3r':
-            decoder_args = deepcopy(decoder_args)
-            decoder_args.pop('decoder_type')
-            self.decoder = Fast3RDecoder(**decoder_args)
-        else:
-            raise ValueError(
-                f"Unsupported decoder type: {decoder_args['decoder_type']}")
-
-    def build_head(
-        self,
-        head_args: dict,
-    ):
-        self.output_mode = head_args['output_mode']
-        self.head_type = head_args['head_type']
-        self.depth_mode = head_args['depth_mode']
-        self.conf_mode = head_args['conf_mode']
-
-        # allocate primary downstream head
-        self.downstream_head = self.head_factory(
-            head_args['head_type'], head_args['output_mode'],
-            has_conf=bool(head_args['conf_mode']),
-            patch_size=head_args['patch_size']
-        )
-
-        # add the second head if with_local_head is True
-        if head_args.get('with_local_head', False):
-            self.downstream_head_local = self.head_factory(
-                head_args['head_type'], head_args['output_mode'],
-                has_conf=bool(head_args['conf_mode']),
-                patch_size=head_args['patch_size']
-            )
-        else:
-            self.downstream_head_local = None
-
-        # magic wrapper
-        self.head = transpose_to_landscape(
-            self.downstream_head, activate=head_args['landscape_only']
-        )
-
-        if self.downstream_head_local:
-            self.local_head = transpose_to_landscape(
-                self.downstream_head_local,
-                activate=head_args['landscape_only']
-            )
-        else:
-            self.local_head = None
-
-    def head_factory(self, head_type, output_mode, has_conf=False,
-                     patch_size=16):
-        """ " build a prediction head for the decoder"""
-        if head_type == "dpt" and output_mode == "pts3d":
-            assert self.decoder_args["depth"] > 9
-            l2 = self.decoder_args["depth"]
-            feature_dim = 256
-            last_dim = feature_dim // 2
-            out_nchan = 3
-            ed = self.encoder_args["embed_dim"]
-            dd = self.decoder_args["embed_dim"]
-            return PixelwiseTaskWithDPT(
-                num_channels=out_nchan + has_conf,
-                feature_dim=feature_dim,
-                last_dim=last_dim,
-                hooks_idx=[0, l2 * 2 // 4, l2 * 3 // 4, l2],
-                dim_tokens=[ed, dd, dd, dd],
-                postprocess=postprocess,
-                depth_mode=self.head_args["depth_mode"],
-                conf_mode=self.head_args["conf_mode"],
-                head_type="regression",
-                patch_size=patch_size,
-            )
-        else:
-            raise NotImplementedError(
-                f"unexpected {head_type=} and {output_mode=}")
-
-    def load_state_dict(self, ckpt, **kw):
-        return super().load_state_dict(ckpt, **kw)
-
-    def load_from_dust3r_checkpoint(self, dust3r_checkpoint_path: str):
-        """Load a Dust3R checkpoint into the model.
-        Only load the patch_embed, enc_blocks, enc_norm, 
-        and downstream_head1 components from the checkpoint.
-
-        Args:
-            dust3r_checkpoint_path (str): Path to the Dust3R checkpoint.
-        """
-        # Load the checkpoint
-        checkpoint = torch.load(dust3r_checkpoint_path,
-                                weights_only=False)['model']
-
-        # Initialize state dictionaries for different components
-        encoder_state_dict = {}
-        downstream_head_state_dict = {}
-
-        # Prepare to track loaded keys
-        loaded_keys = set()
-
-        # Split the checkpoint into encoder and downstream head
-        for key, value in checkpoint.items():
-            if key.startswith("patch_embed") or \
-                    key.startswith("enc_blocks") or key.startswith("enc_norm"):
-                if isinstance(self.encoder, CroCoEncoder):
-                    new_key = key.replace("patch_embed", "encoder.patch_embed") \
-                                 .replace("enc_blocks", "encoder.enc_blocks") \
-                                 .replace("enc_norm", "encoder.enc_norm")
-                    encoder_state_dict[new_key] = value
-                    loaded_keys.add(key)  # Tentatively mark as loaded
-            elif key.startswith("downstream_head1"):
-                new_key = key.replace("downstream_head1", "downstream_head")
-                downstream_head_state_dict[new_key] = value
-                loaded_keys.add(key)  # Tentatively mark as loaded
-
-        # Load the encoder part into the model if
-        # it is an instance of CroCoEncoder
-        # Load the downstream head part into the model with try-catch logic
-        # Save the original downstream head state to restore in case of failure
-        downstream_head_original_state = {
-            k: v.clone() for k, v in self.downstream_head.state_dict().items()}
-
-        if not self.head_args.get('skip_load_pretrained_head', False):
-            try:
-                load_result = self.load_state_dict(
-                    downstream_head_state_dict, strict=False)
-
-                # Remove keys that failed to load
-                missing_keys = set(load_result.missing_keys)
-                unexpected_keys = set(load_result.unexpected_keys)
-                loaded_keys -= (missing_keys | unexpected_keys)
-            except RuntimeError as e:
-                log.warning(f"Error loading downstream head: {str(e)}")
-                log.warning("Reverting downstream head to its original state")
-                # Revert downstream head to its original state
-                self.downstream_head.load_state_dict(
-                    downstream_head_original_state)
-
-                del downstream_head_original_state
-
-                # Remove downstream head keys from loaded_keys,
-                # as they were not loaded
-                loaded_keys -= set([key for key in checkpoint.keys()
-                                   if key.startswith("downstream_head1")])
-        else:
-            log.info("Skipping loading pretrained head")
-
-        # Compute not loaded keys as difference between all
-        # checkpoint keys and loaded keys
-        checkpoint_keys = set(checkpoint.keys())
-        not_loaded_keys = checkpoint_keys - loaded_keys
-
-        del checkpoint
-
-        # Process keys to log only first-level names
-        loaded_first_level_keys = {key.split('.')[0] for key in loaded_keys}
-        not_loaded_first_level_keys = {
-            key.split('.')[0] for key in not_loaded_keys}
-
-        # Log unique first-level keys
-        log.info(f"Loaded first-level keys: {sorted(loaded_first_level_keys)}")
-        log.info(
-            f"First-level keys not loaded: {sorted(not_loaded_first_level_keys)}")
-
-    def set_freeze(self, freeze):  # this is for use by downstream models
-        self.freeze = freeze
-        to_be_frozen = {
-            "none": [],
-            "encoder": [self.encoder],
-            "sandwich": [self.encoder, self.downstream_head],
-            "head": [self.downstream_head, self.downstream_head_local],
-        }
-        freeze_all_params(to_be_frozen[freeze])
-
-    # def _encode_images(self, views, chunk_size=400):
-    #     B = views[0]["img"].shape[0]
-
-    #     # Check if all images have the same shape
-    #     # Process each image individually
-    #     encoded_feats, shapes = [], []
-    #     for view in views:
-    #         img = view["img"]
-    #         true_shape = view.get(
-    #             "true_shape", torch.tensor(
-    #                 img.shape[-2:])[None].repeat(B, 1)
-    #         )
-    #         feat = self.encoder(img)
-    #         encoded_feats.append(feat)
-    #         shapes.append(true_shape)
-
-    #     return encoded_feats, shapes
-    #     # return encoded_feats, positions, shapes
-
-    def _encode_images(self, views, chunk_size=400):
-        B = views[0]["img"].shape[0]
-
-        encoded_feats, positions, shapes = [], [], []
-        for view in views:
-            img = view["img"]
-            true_shape = view.get(
-                "true_shape", torch.tensor(img.shape[-2:])[None].repeat(B, 1)
-            )
-
-            # Get CNN features
-            feat = self.encoder(img)  # Shape: B x C x H x W
-
-            # Convert to patch-like format
-            B, C, H, W = feat.shape
-            feat_patches = feat.view(
-                B, C, H * W).transpose(1, 2)  # B x (H*W) x C
-
-            # Generate 2D positional embeddings
-            pos = self._generate_2d_positions(
-                H, W, B, feat.device)  # B x (H*W) x 2
-
-            encoded_feats.append(feat_patches)
-            positions.append(pos)
-            shapes.append(true_shape)
-
-        return encoded_feats, positions, shapes
-
-    def _generate_2d_positions(self, H, W, B, device):
-        """Generate 2D positional coordinates for CNN feature map"""
-        y_coords = torch.arange(H, device=device).float() / H
-        x_coords = torch.arange(W, device=device).float() / W
-
-        y_grid, x_grid = torch.meshgrid(y_coords, x_coords, indexing='ij')
-        pos_2d = torch.stack([x_grid, y_grid], dim=-1)  # H x W x 2
-        pos_2d = pos_2d.view(-1, 2)  # (H*W) x 2
-        pos_2d = pos_2d.unsqueeze(0).repeat(B, 1, 1)  # B x (H*W) x 2
-
-        return pos_2d
-
-    def set_max_parallel_views_for_head(self, max_parallel_views_for_head):
-        # expose this to user to control the number of views processed in parallel in the head
-        self.max_parallel_views_for_head = max_parallel_views_for_head
-
-    def forward(self, views, profiling=False):
-        """
-        Args:
-            views (list[dict]): a list of views, each view is a dict of tensors, the tensors are batched
-
-        Returns:
-            list[dict]: a list of results for each view
-            dict: profiling information (if profiling=True)
-        """
-        # Initialize profiling dict
-        profiling_info = {} if profiling else None
-
-        # encode the images --> B,S,D
-        encode_images_start_time = time.time()
-        encoded_feats, positions, shapes = self._encode_images(views)
-        encode_images_end_time = time.time()
-        if profiling:
-            torch.cuda.synchronize()
-            encode_images_end_time = time.time()
-            encode_time = encode_images_end_time - encode_images_start_time
-            profiling_info["encode_images_time"] = encode_time
-            print(f"encode_images time: {encode_time}")
-        if encode_images_end_time - encode_images_start_time > 20:
-            print(
-                f"something is wrong with the encoder, it took: {encode_images_end_time - encode_images_start_time}")
-            # print the image and true_shape
-            for view_idx, view in enumerate(views):
-                print(
-                    f"view_idx: {view_idx}\n, view name: {view_name(view)}\n, image content: {view['img']}\n, true_shape: {view['true_shape']}")
-
-        # Create image IDs for each patch
-        pos_emb_start_time = time.time()
-        num_images = len(views)
-        print(encoded_feats[0].shape)
-        B, _, _ = encoded_feats[0].shape
-
-        different_resolution_across_views = not all(
-            torch.equal(shapes[0], shape) for shape in shapes)
-
-        # Initialize an empty list to collect image IDs for each patch.
-        # Note that at inference time, different views may have different number of patches.
-        image_ids = []
-
-        # Loop through each encoded feature to get the actual number of patches
-        for i, encoded_feat in enumerate(encoded_feats):
-            # Get the number of patches for this image
-            num_patches = encoded_feat.shape[1]
-            # Extend the image_ids list with the current image ID repeated num_patches times
-            image_ids.extend([i] * num_patches)
-            print(image_ids)
-
-        # Repeat the image_ids list B times and reshape it to match the expected shape
-        image_ids = torch.tensor(
-            image_ids * B).reshape(B, -1).to(encoded_feats[0].device)
-        if profiling:
-            pos_emb_time = time.time() - pos_emb_start_time
-            profiling_info["pos_emb_time"] = pos_emb_time
-            print(f"pos emb time: {pos_emb_time}")
-
-        # combine all ref images into object-centric representation
-        if profiling:
-            torch.cuda.synchronize()
-            decoder_start_time = time.time()
-        dec_output = self.decoder(encoded_feats, positions, image_ids)
-        if profiling:
-            torch.cuda.synchronize()
-            decoder_time = time.time() - decoder_start_time
-            profiling_info["decoder_time"] = decoder_time
-            print(f"decoder time: {decoder_time}")
-
-        ################## Forward pass through the head ##################
-        # TODO: optimize this
-
-        # Initialize the final results list
-        final_results = [{} for _ in range(num_images)]
-
-        head_prepare_input_start_time = time.time()
-        # Prepare the gathered outputs for each layer
-        if different_resolution_across_views or self.training:
-            # Precompute the number of patches per image
-            num_patches_list = [encoded_feat.shape[1]
-                                for encoded_feat in encoded_feats]
-
-            gathered_outputs_list = [[]
-                                     for _ in range(num_images)]  # List per image
-            for layer_output in dec_output:
-                # layer_output: (B, P_total, D)
-                # Split layer_output along dimension 1 according to num_patches_list
-                split_layer_outputs = torch.split(
-                    layer_output, num_patches_list, dim=1)
-                for img_id, gathered_output in enumerate(split_layer_outputs):
-                    # gathered_output: (B, num_patches_list[img_id], D)
-                    gathered_outputs_list[img_id].append(gathered_output)
-        else:
-            # All images have the same number of patches
-            P_patches = encoded_feats[0].shape[1]
-            gathered_outputs_list = []
-            for layer_output in dec_output:
-                # layer_output: (B, num_images * P_patches, D)
-                # Rearrange to (num_images * B, P_patches, D)
-                # import ipdb; ipdb.set_trace()
-                layer_output = rearrange(
-                    layer_output,
-                    'B (num_images P_patches) D -> (num_images B) P_patches D',
-                    num_images=num_images,
-                    P_patches=P_patches
-                )
-                gathered_outputs_list.append(layer_output)
-
-        if profiling:
-            head_prepare_input_time = time.time() - head_prepare_input_start_time
-            profiling_info["head_prepare_input_time"] = head_prepare_input_time
-            print(f"head prepare input time: {head_prepare_input_time}")
-
-        head_forward_start_time = time.time()
-        with profiler.record_function("head: forward pass"):
-            if different_resolution_across_views or self.training:
-                # If the views have different resolutions, we cannot batch the views together
-                # or if we are in training mode, we can batch the views together, but we dont want to get OOM so we process them sequentially
-                # Forward pass for each view separately
-                final_results = [{} for _ in range(num_images)]
-                for img_id in range(num_images):
-                    img_result = self.head(
-                        gathered_outputs_list[img_id], shapes[img_id])
-                    if self.local_head:
-                        local_img_result = self.local_head(
-                            gathered_outputs_list[img_id], shapes[img_id])
-
-                    # Re-map the results back to the original batch and image order
-                    for key in img_result.keys():
-                        if key == 'pts3d':
-                            final_results[img_id]['pts3d_in_other_view'] = img_result[key]
-                        else:
-                            final_results[img_id][key] = img_result[key]
-
-                    # Store local head output if available
-                    if self.local_head:
-                        final_results[img_id]['pts3d_local'] = local_img_result['pts3d']
-                        if 'conf' in local_img_result:
-                            final_results[img_id]['conf_local'] = local_img_result['conf']
-            else:  # if we are in inference mode and all views have the same resolution, we can batch the views together
-                concatenated_shapes = torch.cat(shapes, dim=0)
-
-                # Split concatenated_shapes into chunks outside the loop
-                shape_chunks = torch.split(
-                    concatenated_shapes, self.max_parallel_views_for_head, dim=0)
-                # Determine number of chunks from shape_chunks
-                num_chunks = len(shape_chunks)
-
-                # Initialize a list to hold chunked gathered outputs
-                chunked_gathered_outputs_list = [[] for _ in range(num_chunks)]
-
-                # Split gathered_outputs_list into chunks
-                for layer_output in gathered_outputs_list:
-                    # Split the layer_output along (num_images * B) dimension
-                    split_layer_outputs = torch.split(
-                        layer_output, self.max_parallel_views_for_head, dim=0)
-                    for chunk_idx, split_output in enumerate(split_layer_outputs):
-                        chunked_gathered_outputs_list[chunk_idx].append(
-                            split_output)
-
-                # Initialize lists to hold results for each chunk
-                result_chunks = []
-                local_result_chunks = [] if self.local_head else None
-
-                # Process each chunk through self.head and local_head
-                for chunk, chunk_shapes in zip(chunked_gathered_outputs_list, shape_chunks):
-                    # Forward pass for self.head
-                    result_chunk = self.head(chunk, chunk_shapes)
-                    result_chunks.append(result_chunk)
-
-                    # Forward pass for local head if available
-                    if self.local_head:
-                        local_result_chunk = self.local_head(
-                            chunk, chunk_shapes)
-                        local_result_chunks.append(local_result_chunk)
-
-                # Reassemble chunks
-                result = {key: torch.cat(
-                    [chunk[key] for chunk in result_chunks],
-                    dim=0) for key in result_chunks[0].keys()}
-
-                if self.local_head:
-                    local_result = {key: torch.cat(
-                        [chunk[key] for chunk in local_result_chunks],
-                        dim=0) for key in local_result_chunks[0].keys()}
-
-                # Re-map the results from num_images * B tensor to list of B tensors
-                # Initialize the final results list
-                final_results = [{} for _ in range(num_images)]
-
-                # Re-map the results back to the original batch and image order
-                for key in result.keys():
-                    for img_id in range(num_images):
-                        img_result = result[key][img_id * B:(img_id + 1) * B]
-                        if key == 'pts3d':
-                            final_results[img_id]['pts3d_in_other_view'] = img_result
-                        else:
-                            final_results[img_id][key] = img_result
-
-                        # Store local head output if available
-                        if self.local_head:
-                            local_img_result = local_result['pts3d'][img_id * B:(
-                                img_id + 1) * B]
-                            final_results[img_id]['pts3d_local'] = local_img_result
-                            if 'conf' in local_result:
-                                final_results[img_id]['conf_local'] = local_result['conf'][img_id * B:(
-                                    img_id + 1) * B]
-        if profiling:
-            torch.cuda.synchronize()
-            end_time = time.time()
-            profiling_info["head_forward_time"] = end_time - \
-                head_forward_start_time
-            print(f"head forward time: {end_time - head_forward_start_time}")
-            profiling_info["total_time"] = end_time - encode_images_start_time
-            print(
-                f"total Fast3R forward time: {end_time - encode_images_start_time}")
-
-        if profiling:
-            return final_results, profiling_info
-        else:
-            return final_results
-
-
 class LightFast3Rv2(nn.Module,
                     huggingface_hub.PyTorchModelHubMixin,
                     repo_url="",
@@ -614,6 +110,9 @@ class LightFast3Rv2(nn.Module,
         elif encoder_args["encoder_type"] == 'mobilenetv4_167':  # Version 2
             encoder_args.pop('encoder_type')
             self.encoder = MobileNetV4_167(**encoder_args)
+        elif encoder_args["encoder_type"] == 'efficientnetv2-l':
+            encoder_args.pop('encoder_type')
+            self.encoder = EfficientnetV2_L(**encoder_args)
         else:
             raise ValueError(
                 f"Unsupported encoder type: {encoder_args['encoder_type']}")
@@ -1336,7 +835,88 @@ class MobileNetV4_167(nn.Module):
         """Get the number of channels at each stage"""
         return [info['num_chs'] for info in self.feature_info]
 
+class EfficientnetV2_L(nn.Module):
+    def __init__(self, embed_dim=1024):
+        super(EfficientnetV2_L, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model('tf_efficientnetv2_l.in21k_ft_in1k', 
+                                          pretrained=True,features_only=True)
 
+        self.pool8 = torch.nn.MaxPool2d(8,8)
+        self.pool4 = torch.nn.MaxPool2d(4,4)
+        self.pool2 = torch.nn.MaxPool2d(2,2)
+        
+        self.conv0 = nn.Conv2d(32, int(self.embed_dim//4),
+                              kernel_size=3, stride=1, padding=1)
+        self.conv1 = nn.Conv2d(64, int(self.embed_dim//4),
+                              kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(96, int(self.embed_dim//4),
+                              kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(224, int(self.embed_dim//4),
+                              kernel_size=3, stride=1, padding=1)
+        
+        self.bn0 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.bn1 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//4))
+        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//4))
+        
+        self.gelu = nn.GELU()
+        
+
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        
+        """
+        # >>> a1[0].shape
+        # torch.Size([1, 32, 256, 192])
+        # >>> a1[1].shape
+        # torch.Size([1, 64, 128, 96])
+        # >>> a1[2].shape
+        # torch.Size([1, 96, 64, 48])
+        # >>> a1[3].shape
+        # torch.Size([1, 224, 32, 24])
+        # >>> a1[4].shape
+        # torch.Size([1, 640, 16, 12])
+        
+        x_all = self.backbone(image)
+        x0 = x_all[0]  # [1, 32, 256, 192]
+        x1 = x_all[1]  # [1, 64, 128, 96]
+        x2 = x_all[2]  # [1, 96, 64, 48]
+        x3 = x_all[3]  # [1, 224, 32, 24]
+        # print(x0.shape)
+        # print(x1.shape)
+        # print(x2.shape)
+        # print(x3.shape)
+        # import ipdb;
+        # ipdb.set_trace()
+        x01 = x0.reshape(x0.shape[0], -1, x3.shape[-2], x3.shape[-1])  # [1, 32*64, 32, 24] 2048
+        x11 = x1.reshape(x1.shape[0], -1, x3.shape[-2], x3.shape[-1])  # [1, 64*16, 32, 24] 1024
+        x21 = x2.reshape(x2.shape[0], -1, x3.shape[-2], x3.shape[-1])  # [1, 96*4, 32, 24] 384
+        x31 = x3  # [1, 224, 32, 24]
+        x2 = torch.cat((x01, x11, x21, x31), dim=1)  # [1, 2048+1024+384+224, 32, 24] = [1, 3680, 32, 24]
+        
+        # x00 = self.gelu(self.bn0(self.conv0(x0)))  # [1, 256, 256, 192]
+        # x00p = self.pool8(x00)  # [1, 256, 32, 24]
+        # x01 = self.gelu(self.bn1(self.conv1(x1)))  # [1, 256, 128, 96]
+        # x01p = self.pool4(x01)  # [1, 256, 32, 24]
+        # x02 = self.gelu(self.bn2(self.conv2(x2)))  # [1, 256, 64, 48]
+        # x02p = self.pool2(x02)  # [1, 256, 32, 24]
+        # x03 = self.gelu(self.bn3(self.conv3(x3)))  # [1, 256, 32, 24]
+        # x2 = torch.cat((x00p, x01p, x02p, x03), dim=1)  # [1, 256*4, 32, 24] = [1, 1024, 32, 24]
+        
+        # x_cat = torch.cat((x01, x11, x21, x31), dim=1)  # [1, 32*64+64*16+96*4+224, 32, 24] = [1, 2048+864+384+224, 32, 24] = [1, 3520, 32, 24]
+        
+        # x2 = self.conv(x_cat)  # [1, 1024, 32, 24]
+        features = x2.view(x2.shape[0], -1, x2.shape[1]) # [1, 768, 3680]
+        # print(features.shape)
+        return features  # torch.Size([1, 768, 1024])
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
 class ResNetEncoder(nn.Module):
     def __init__(
         self,
@@ -1384,10 +964,10 @@ class Fast3RDecoderCNN2(nn.Module):
     def __init__(
         self,
         random_image_idx_embedding: bool,
-        image_idx_emb_dim: int = 128,
-        embed_dim: int = 768,
-        enc_embed_dim: int = 1024,
-        depth: int = 12,
+        image_idx_emb_dim: int,
+        embed_dim: int,
+        enc_embed_dim: int,
+        depth: int,
     ):
         super(Fast3RDecoderCNN2, self).__init__()
 
@@ -1498,7 +1078,8 @@ class Fast3RDecoderCNN2(nn.Module):
         """
         x = torch.cat(
             encoded_feats, dim=1)  # concate along the patch dimension
-        # (numviews, 1, 768, 1024) -> 
+        
+        # print(f"Decoder input x shape: {x.shape}")
 
         final_output = [x]  # before projection
 
