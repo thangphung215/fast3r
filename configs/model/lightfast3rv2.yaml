@@ -49,13 +49,13 @@ scheduler:
 net:
   _target_: fast3r.models.lightfast3r.LightFast3Rv2
   encoder_args:
-    encoder_type: mobilenetv4_167
-    embed_dim: 5760
+    encoder_type: resnet101_167
+    embed_dim: 3712
   decoder_args:
     decoder_type: fast3rcnn2
     random_image_idx_embedding: true
     image_idx_emb_dim: 128
-    enc_embed_dim: 5760
+    enc_embed_dim: 3712
     embed_dim: 768 
     depth: 12
   head_args:

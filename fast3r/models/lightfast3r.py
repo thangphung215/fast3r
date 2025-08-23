@@ -614,6 +614,9 @@ class LightFast3Rv2(nn.Module,
         elif encoder_args["encoder_type"] == 'mobilenetv4_167':  # Version 2
             encoder_args.pop('encoder_type')
             self.encoder = MobileNetV4_167(**encoder_args)
+        elif encoder_args["encoder_type"] == 'resnet101_167':  # Version 2
+            encoder_args.pop('encoder_type')
+            self.encoder = ResNet101_167(**encoder_args)
         else:
             raise ValueError(
                 f"Unsupported encoder type: {encoder_args['encoder_type']}")
@@ -1277,30 +1280,12 @@ class MobileNetV4_167(nn.Module):
             'mobilenetv4_conv_large.e500_r256_in1k',
             pretrained=True, features_only=True)
 
-        self.conv2 = nn.Conv2d(192, int(self.embed_dim//4),
-                              kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(int(self.embed_dim//4))
-        self.conv3 = nn.Conv2d(96, int(self.embed_dim//4),
-                              kernel_size=4, stride=2, padding=1)
-        self.bn3 = nn.BatchNorm2d(int(self.embed_dim//4))
-        self.conv4 = nn.Conv2d(48, int(self.embed_dim//4),
-                              kernel_size=6, stride=4, padding=1)
-        self.bn4 = nn.BatchNorm2d(int(self.embed_dim//4))
-        self.conv5 = nn.Conv2d(24, int(self.embed_dim//4),
-                              kernel_size=10, stride=8, padding=1)
-        self.bn5 = nn.BatchNorm2d(int(self.embed_dim//4))
-        
     def forward(self, image, image167):
         """
         Forward pass through the encoder
         Returns multi-scale features from different stages
         """
-        # torch.Size([1, 24, 192,256])
-        # torch.Size([1, 48, 96, 128])
-        # torch.Size([1, 96, 48, 64])
-        # torch.Size([1, 192, 24, 32])
-        # torch.Size([1, 960, 12, 16])
-        # [print(aa.shape) for aa in self.backbone(image)]
+
         xall = self.backbone(image)
         xall_167 = self.backbone_167(image167)
         x2 = xall[-2]  # [1, 192, 24, 32]
@@ -1314,9 +1299,7 @@ class MobileNetV4_167(nn.Module):
         
         x5 = xall[-5]  # [1, 24, 192, 256]
         x5_167 = xall_167[-5]  # [1, 24, 192, 256]
-        # print(image.shape, image167.shape)
-        # print(x1.shape, x1_167.shape)
-        # import ipdb; ipdb.set_trace()
+
         x2_c = x2 # [1, 192, 32, 24]
         x2_167_c = x2_167 # [1, 192, 32, 24]
         x3_c = x3.reshape(x3.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 96*2*2, 32, 24]
@@ -1325,26 +1308,84 @@ class MobileNetV4_167(nn.Module):
         x4_167_c = x4_167.reshape(x4_167.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 48*4*4, 32, 24] 
         x5_c = x5.reshape(x5.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 24*8*8, 32, 24]
         x5_167_c = x5_167.reshape(x5_167.shape[0],-1, x2.shape[2], x2.shape[3])  # [1, 24*8*8, 32, 24]
-        # Concatenate the features from both images along the channel dimension
-        # import ipdb; ipdb.set_trace()
-        # x2_mix = torch.cat((x2, x2_167), dim=1)
-        # x2_mix = x2_c + x2_167_c  # [1,256, 32, 24]
-        # x3_mix = x3_c + x3_167_c  # [1,256, 32, 24]
-        # x4_mix = x4_c + x4_167_c  # [1,256, 32, 24]
-        # x5_mix = x5_c + x5_167_c  # [1,256, 32, 24]
-        
-        # Concatenate all features along the channel dimension
-        # print(f"x2_mix shape: {x2_mix.shape}, x3_mix shape: {x3_mix.shape}, x4_mix shape: {x4_mix.shape}, x5_mix shape: {x5_mix.shape}")
-        # x2345_mix = torch.cat((x2_mix, x3_mix, x4_mix, x5_mix), dim=1)  # [1, 1024, 32, 24]
+
         x2345_mix = torch.cat((x2_c, x2_167_c, x3_c, x3_167_c, x4_c, x4_167_c, x5_c, x5_167_c), dim=1)  # [1, 5760, 32, 24]
         features = x2345_mix.view(x2345_mix.shape[0], -1, x2345_mix.shape[1])
-        # print(features.shape)
+
         return features  # torch.Size([1, 768, 1024])
 
     def get_feature_dims(self):
         """Get the number of channels at each stage"""
         return [info['num_chs'] for info in self.feature_info]
 
+
+class ResNet101_167(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(ResNet101_167, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            'resnet101.tv_in1k', pretrained=True, features_only=True)
+        self.backbone_167 = timm.create_model(
+            'resnet101.tv_in1k', pretrained=True, features_only=True)
+
+        self.maxpool8 = nn.MaxPool2d(kernel_size=8, stride=8)
+        self.maxpool4 = nn.MaxPool2d(kernel_size=4, stride=4)
+        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+    def forward(self, image, image167):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        # >>> a1[0].shape
+        # torch.Size([1, 64, 256, 192])
+        # >>> a1[1].shape
+        # torch.Size([1, 256, 128, 96])
+        # >>> a1[2].shape
+        # torch.Size([1, 512, 64, 48])
+        # >>> a1[3].shape
+        # torch.Size([1, 1024, 32, 24])
+        # >>> a1[4].shape
+        # torch.Size([1, 2048, 16, 12])
+        
+        xall = self.backbone(image)
+        xall_167 = self.backbone_167(image167)
+        x0 = xall[0]  # [1, 64, 256, 192]
+        x0_167 = xall_167[0]  #  [1, 64, 256, 192]
+        
+        x1 = xall[1]  #  [1, 256, 128, 96]
+        x1_167 = xall_167[1]  #  [1, 256, 128, 96]
+        
+        x2 = xall[2]  #  [1, 512, 64, 48]
+        x2_167 = xall_167[2]  #  [1, 512, 64, 48]
+        
+        x3 = xall[3]  #  [1, 1024, 32, 24]
+        x3_167 = xall_167[3]   #  [1, 1024, 32, 24]
+
+        
+        x3_c = x3 # [1, 1024, 32, 24]
+        x3_167_c = x3_167 # [1, 1024, 32, 24]
+        # x2_c = x2.reshape(x2.shape[0],-1, x3.shape[2], x3.shape[3])  # [1, 512*2*2, 32, 24]
+        # x2_167_c = x2_167.reshape(x2_167.shape[0],-1, x3.shape[2], x3.shape[3])  # [1, 512*2*2, 32, 24]
+        # x1_c = x1.reshape(x1.shape[0],-1, x3.shape[2], x3.shape[3])  # [1, 256*4*4, 32, 24]
+        # x1_167_c = x1_167.reshape(x1_167.shape[0],-1, x3.shape[2], x3.shape[3])  # [1, 256*4*4, 32, 24]
+        # x0_c = x0.reshape(x0.shape[0],-1, x3.shape[2], x3.shape[3])  # [1, 64*8*8, 32, 24]
+        # x0_167_c = x0_167.reshape(x0_167.shape[0],-1, x3.shape[2], x3.shape[3])  # [1, 64*8*8, 32, 24]
+        x2_c = self.maxpool2(x2)  # [1, 512, 32, 24]
+        x2_167_c = self.maxpool2(x2_167)  # [1, 512, 32, 24]
+        x1_c = self.maxpool4(x1)  # [1, 256, 32, 24]
+        x1_167_c = self.maxpool4(x1_167)  # [1, 256, 32, 24]
+        x0_c = self.maxpool8(x0)  # [1, 64, 32, 24]
+        x0_167_c = self.maxpool8(x0_167)  # [1, 64, 32, 24]
+        
+        
+        x2345_mix = torch.cat((x3_c, x3_167_c, x2_c, x2_167_c, x1_c, x1_167_c, x0_c, x0_167_c), dim=1)  # [1, 3712, 32, 24]
+        features = x2345_mix.view(x2345_mix.shape[0], -1, x2345_mix.shape[1])
+        return features
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
 
 class ResNetEncoder(nn.Module):
     def __init__(

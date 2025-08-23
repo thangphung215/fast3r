@@ -11,7 +11,7 @@ seed: 42
 
 tags: ["train", "super_long_training"]
 
-task_name: mobilenetv4_2inputs_arkitonly_1xA6000_20250816_20e_5000arkit_co3d_dtu
+task_name: resnet101_2inputs_arkitonly_1x3090_20250816_20e_5000arkit_co3d_dtu
 # task_name: super_long_training_mobilenetv4_arkit_2inputs_test2_sum_fr_sandwich_20250812_test_tv
 # task_name: super_long_training_mambavision_test_effientnetv2
 # task_name: super_long_training_mambavision_benchmarkDTU
