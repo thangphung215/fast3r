@@ -56,7 +56,7 @@ net:
     random_image_idx_embedding: true
     image_idx_emb_dim: 128
     enc_embed_dim: 3712
-    embed_dim: 768 
+    embed_dim: 512 
     depth: 12
   head_args:
     head_type: dpt
