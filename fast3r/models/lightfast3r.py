@@ -913,23 +913,7 @@ class Fast3RDecoderCNN2(nn.Module):
             ).float(),
             persistent=False,
         )
-
-        self.object_queries = nn.Parameter(torch.randn(12, 256) * 0.02)
-        self.pos = self.object_queries.unsqueeze(0).expand(num_views, -1, -1)
-
-        self.dec_blocks = nn.ModuleList([
-            Block(
-                dim=embed_dim,
-                num_heads=4,
-                mlp_ratio=4.0,
-                qkv_bias=True,
-                drop=0.0,
-                attn_drop=0.0,
-                norm_layer=nn.LayerNorm,
-                attn_implementation="flash_attention",
-            ) for _ in range(12)
-        ])
-        
+        self.depth = depth
         # self.projections = nn.Sequential(
         #     nn.Linear(embed_dim, depth*embed_dim, bias=True),
         #     nn.ReLU6()
@@ -1041,9 +1025,9 @@ class Fast3RDecoderCNN2(nn.Module):
 
         x += image_pos  # x has size B x Npatches x D, image_pos has size Npatches x D, so this is broadcasting
 
-        for blk in self.dec_blocks:
-            x1 = blk(x, self.pos)
-            final_output.append(x1)
+        for blk in range(self.depth):
+            # x1 = blk(x, self.pos)
+            final_output.append(x)
             # print(x1.shape)
         # output = self.projections(x)  # (B, Npatches, D * depth)
         # import ipdb; ipdb.set_trace()
