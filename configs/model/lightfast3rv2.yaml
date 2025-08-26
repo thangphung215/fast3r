@@ -42,7 +42,7 @@ optimizer:
 scheduler:
   _target_: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
   _partial_: true
-  warmup_epochs: 5
+  warmup_epochs: 2
   max_epochs: ${trainer.max_epochs}
   eta_min: 1e-06
 

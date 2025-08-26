@@ -914,6 +914,10 @@ class Fast3RDecoderCNN2(nn.Module):
             persistent=False,
         )
         self.depth = depth
+        self.fc = nn.Linear(embed_dim, depth*embed_dim)
+        # self.gelu = nn.GELU()
+        self.relu = nn.ReLU()
+        # self.bn = nn.BatchNorm1d(num_views*768)
         # self.projections = nn.Sequential(
         #     nn.Linear(embed_dim, depth*embed_dim, bias=True),
         #     nn.ReLU6()
@@ -1023,11 +1027,12 @@ class Fast3RDecoderCNN2(nn.Module):
         # print(f"image_pos {image_pos.shape}")
         # Apply positional embedding based on image IDs and positions
 
-        x += image_pos  # x has size B x Npatches x D, image_pos has size Npatches x D, so this is broadcasting
+        # x += image_pos  # x has size B x Npatches x D, image_pos has size Npatches x D, so this is broadcasting
 
+        x = self.relu(self.fc(x))
         for blk in range(self.depth):
             # x1 = blk(x, self.pos)
-            final_output.append(x)
+            final_output.append(x[:, :, blk * x.shape[-1] // self.depth:(blk + 1) * x.shape[-1] // self.depth])
             # print(x1.shape)
         # output = self.projections(x)  # (B, Npatches, D * depth)
         # import ipdb; ipdb.set_trace()
