@@ -81,6 +81,18 @@ class NRGBD(BaseManyViewDataset):
         return np.array(poses, dtype=np.float32), valid
 
 
+    def crop_and_resize_blendedmvs(self, img, ratio=10/6):
+        h, w = img.shape[:2]
+        center = (w // 2, h // 2)
+        new_w = int(w / ratio)
+        new_h = int(h / ratio)
+        cropped_img = img[center[1] - new_h // 2:center[1] + new_h // 2,
+                          center[0] - new_w // 2:center[0] + new_w // 2]
+        # Resize to original size
+        resized_img = cv2.resize(
+            cropped_img, (w, h), interpolation=cv2.INTER_CUBIC)
+
+        return resized_img
     
     def _get_views(self, idx, resolution, rng):
 
@@ -113,6 +125,7 @@ class NRGBD(BaseManyViewDataset):
             depthpath = osp.join(self.ROOT, scene_id, 'depth',f'depth{im_idx}.png')
 
             rgb_image = imread_cv2(impath)
+            image_167 = self.crop_and_resize_blendedmvs(rgb_image)
             depthmap = imread_cv2(depthpath, cv2.IMREAD_UNCHANGED)
             depthmap = np.nan_to_num(depthmap.astype(np.float32), 0.0) / 1000.0
             depthmap[depthmap>10] = 0
@@ -124,11 +137,12 @@ class NRGBD(BaseManyViewDataset):
             # gl to cv
             camera_pose[:, 1:3] *= -1.0
 
-            rgb_image, depthmap, intrinsics = self._crop_resize_if_necessary(
-                rgb_image, depthmap, intrinsics_, resolution, rng=rng, info=impath)
+            rgb_image, image_167, depthmap, intrinsics = self._crop_resize_if_necessary(
+                rgb_image, image_167, depthmap, intrinsics_, resolution, rng=rng, info=impath)
 
             views.append(dict(
                 img=rgb_image,
+                image_167=image_167,
                 depthmap=depthmap,
                 camera_pose=camera_pose,
                 camera_intrinsics=intrinsics,
