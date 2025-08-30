@@ -27,7 +27,7 @@ from fast3r.dust3r.datasets.base.base_stereo_view_dataset import view_name
 from fast3r.croco.models.pos_embed import RoPE2D, get_1d_sincos_pos_embed_from_grid
 from fast3r.models.components.llama import TransformerBlock, RMSNorm, precompute_freqs_cis
 
-from fast3r.models.fast3r import CroCoEncoder
+from fast3r.models.fast3r import CroCoEncoder, Fast3RDecoder
 from fast3r.dust3r.utils.misc import (
     freeze_all_params,
     transpose_to_landscape,
@@ -113,6 +113,12 @@ class LightFast3Rv2(nn.Module,
         elif encoder_args["encoder_type"] == 'efficientnetv2-l':
             encoder_args.pop('encoder_type')
             self.encoder = EfficientnetV2_L(**encoder_args)
+        elif encoder_args["encoder_type"] == 'resnet101':
+            encoder_args.pop('encoder_type')
+            self.encoder = ResNet101(**encoder_args)
+        elif encoder_args["encoder_type"] == 'convnext':
+            encoder_args.pop('encoder_type')
+            self.encoder = ConvNext(**encoder_args)
         else:
             raise ValueError(
                 f"Unsupported encoder type: {encoder_args['encoder_type']}")
@@ -131,6 +137,13 @@ class LightFast3Rv2(nn.Module,
         elif decoder_args["decoder_type"] == 'mamba':  # Version 3
             decoder_args.pop('decoder_type')
             self.decoder = MambaFusionDecoder(**decoder_args)
+        elif decoder_args["decoder_type"]=='multiatt':
+            decoder_args.pop('decoder_type')
+            self.decoder = MultiScaleAttentionDecoder(**decoder_args)
+        if decoder_args["decoder_type"] == 'fast3r':
+            decoder_args = deepcopy(decoder_args)
+            decoder_args.pop('decoder_type')
+            self.decoder = Fast3RDecoder(**decoder_args)
         else:
             raise ValueError(
                 f"Unsupported decoder type: {decoder_args['decoder_type']}")
@@ -406,6 +419,7 @@ class LightFast3Rv2(nn.Module,
             torch.cuda.synchronize()
             decoder_start_time = time.time()
             
+        # dec_output = self.decoder(encoded_feats)
         dec_output = self.decoder(encoded_feats, image_ids)
         # print(f"dec_output shape: ")
         # for i, dec_out in enumerate(dec_output):
@@ -724,44 +738,6 @@ class MobileNetV4(nn.Module):
         return [info['num_chs'] for info in self.feature_info]
 
 
-# class MobileNetV4_167(nn.Module):
-#     def __init__(self, embed_dim=768):
-#         super(MobileNetV4_167, self).__init__()
-#         self.embed_dim = embed_dim
-#         self.backbone = timm.create_model(
-#             'mobilenetv4_conv_large.e500_r256_in1k',
-#             pretrained=True, features_only=True)
-
-#         self.conv = nn.Conv2d(192, int(self.embed_dim),
-#                               kernel_size=3, stride=1, padding=1)
-#         self.bn = nn.BatchNorm2d(int(self.embed_dim))
-
-#     def forward(self, image, image167):
-#         """
-#         Forward pass through the encoder
-#         Returns multi-scale features from different stages
-#         """
-#         x1 = self.backbone(image)[-2]  # [1, 192, 32, 24]
-#         x1_167 = self.backbone(image167)[-2]  # [1, 192, 32, 24]
-#         # print(image.shape, image167.shape)
-#         # print(x1.shape, x1_167.shape)
-#         # import ipdb; ipdb.set_trace()
-#         x2 = self.conv(x1)  # [1, 1024, 32, 24]
-#         x2 = self.bn(x2)  # [1, 1024, 32, 24]
-#         x2_167 = self.conv(x1_167)  # [1, 1024, 32, 24]
-#         x2_167 = self.bn(x2_167)  # [1, 1024, 32, 24]
-#         # Concatenate the features from both images along the channel dimension
-#         # x2_mix = torch.cat((x2, x2_167), dim=1)
-#         x2_mix = x2 + x2_167  # [1, 1024, 32, 24]
-#         features = x2_mix.view(x2_mix.shape[0], -1, x2_mix.shape[1])
-#         # print(features.shape)
-#         return features  # torch.Size([1, 768, 1024])
-
-#     def get_feature_dims(self):
-#         """Get the number of channels at each stage"""
-#         return [info['num_chs'] for info in self.feature_info]
-
-
 class MobileNetV4_167(nn.Module):
     def __init__(self, embed_dim=768):
         super(MobileNetV4_167, self).__init__()
@@ -959,6 +935,92 @@ class MambaFusionDecoder(nn.Module):
         # self.cross_mamba = CrossMamba(embed_dim)
         # self.final_norm = RMSNorm(embed_dim)
 
+class ResNet101(nn.Module):
+    def __init__(self, embed_dim=768):
+        super(ResNet101, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            'resnet101.tv_in1k', pretrained=True, features_only=True)
+
+    
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        # >>> a1[0].shape
+        # torch.Size([1, 64, 256, 192])
+        # >>> a1[1].shape
+        # torch.Size([1, 256, 128, 96])
+        # >>> a1[2].shape
+        # torch.Size([1, 512, 64, 48])
+        # >>> a1[3].shape
+        # torch.Size([1, 1024, 32, 24])
+        # >>> a1[4].shape
+        # torch.Size([1, 2048, 16, 12])
+        
+        features = self.backbone(image)[:-1]
+        return features
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
+class ConvNext(nn.Module):
+    def __init__(self, embed_dim=768,model_size='large'):
+        super(ConvNext, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            f'convnext_{model_size}.fb_in22k_ft_in1k', pretrained=True, 
+            features_only=True)
+
+    
+    def forward(self, image):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        # torch.Size([1, 192, 128, 96])
+        # torch.Size([1, 384, 64, 48])
+        # torch.Size([1, 768, 32, 24])
+        # torch.Size([1, 1536, 16, 12])
+        
+        features = self.backbone(image)[-1]
+        B, C, H, W = features.shape
+        pos = self.get_2d_sinusoidal_pos_embed(C, H, W, B)
+        return features, pos
+
+    def get_2d_sinusoidal_pos_embed(self, embed_dim, H, W, B):
+        """
+        embed_dim: embedding dim (must match channel dim)
+        H, W: height, width
+        B: batch size
+        return: [B, embed_dim, H, W]
+        """
+        # grid positions
+        grid_y = torch.arange(H, dtype=torch.float32).unsqueeze(1).repeat(1, W)  # [H, W]
+        grid_x = torch.arange(W, dtype=torch.float32).unsqueeze(0).repeat(H, 1)  # [H, W]
+        
+        pos_y = grid_y.reshape(-1)  # [H*W]
+        pos_x = grid_x.reshape(-1)  # [H*W]
+        
+        dim_t = torch.arange(embed_dim // 4, dtype=torch.float32)
+        dim_t = 10000 ** (2 * (dim_t // 2) / (embed_dim // 4))
+        
+        # encode y and x separately
+        pos_y = pos_y[:, None] / dim_t
+        pos_x = pos_x[:, None] / dim_t
+        
+        pos = torch.cat([torch.sin(pos_y), torch.cos(pos_y),
+                        torch.sin(pos_x), torch.cos(pos_x)], dim=1)  # [H*W, embed_dim]
+        
+        pos = pos.reshape(H, W, embed_dim).permute(2, 0, 1)  # [C, H, W]
+        pos = pos.unsqueeze(0).repeat(B, 1, 1, 1)            # [B, C, H, W]
+        return pos
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
 
 class Fast3RDecoderCNN2(nn.Module):
     def __init__(
@@ -1117,359 +1179,3 @@ class Fast3RDecoderCNN2(nn.Module):
         # output = output.permute(0, 2, 1, 3)
 
         return final_output
-
-
-class Fast3RDecoderCNN(nn.Module):
-    def __init__(
-        self,
-        random_image_idx_embedding: bool,
-        enc_embed_dim: int,
-        embed_dim: int = 768,
-        num_cnn_layers: int = 6,  # Replace depth parameter
-        kernel_size: int = 3,     # New parameter for CNN
-        stride: int = 1,          # New parameter for CNN
-        padding: int = 1,         # New parameter for CNN
-        norm_layer=nn.BatchNorm2d,  # Use BatchNorm2d for CNN
-        num_images: int = 10
-    ):
-        super(Fast3RDecoderCNN, self).__init__()
-
-        # transfer from encoder to decoder
-
-        # Replace Linear projection with Conv2d for spatial features
-        # Replace transformer blocks with CNN blocks
-        # self.conv_blocks = nn.ModuleList([
-        #     nn.Sequential(
-        #         nn.Conv2d(embed_dim, embed_dim, kernel_size,
-        #                   stride=stride, padding=padding),
-        #         norm_layer(embed_dim),
-        #         nn.ReLU6(inplace=True),
-        #         nn.Conv2d(embed_dim, embed_dim, kernel_size,
-        #                   stride=stride, padding=padding),
-        #         norm_layer(embed_dim),
-        #         nn.ReLU6(inplace=True),
-        #         # Optional: Add residual connection
-        #         # 1x1 conv for residual
-        #         nn.Conv2d(embed_dim, embed_dim, kernel_size=3)
-        #     ) for _ in range(num_cnn_layers)
-        # ])
-        self.num_cnn_layers = num_cnn_layers
-        self.conv_block_0 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim*num_images, enc_embed_dim, kernel_size=kernel_size,
-                      stride=stride, padding=padding),
-            norm_layer(enc_embed_dim),
-            nn.ReLU6(inplace=True))
-        # self.conv_block_1 = nn.Sequential(
-        #     nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images, kernel_size=kernel_size,
-        #               stride=stride, padding=padding),
-        #     norm_layer(enc_embed_dim),
-        #     nn.ReLU6(inplace=True))
-        # self.conv_blocks = nn.ModuleList([
-        #     nn.Sequential(
-        #         nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images, kernel_size=kernel_size,
-        #                   stride=stride, padding=padding),
-        #         norm_layer(enc_embed_dim),
-        #         nn.ReLU6(inplace=True),
-        #     ) for _ in range(num_cnn_layers - 1)])
-
-        self.conv_block_1 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size,
-                      stride=stride, padding=padding),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_2 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size,
-                      stride=stride, padding=padding),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_3 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size,
-                      stride=stride, padding=padding),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_4 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+2,
-                      stride=stride, padding=padding+1),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_5 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+2,
-                      stride=stride, padding=padding+1),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_6 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+2,
-                      stride=stride, padding=padding+1),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_7 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+4,
-                      stride=stride, padding=padding+2),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_8 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+4,
-                      stride=stride, padding=padding+2),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_9 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+4,
-                      stride=stride, padding=padding+2),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        self.conv_block_10 = nn.Sequential(
-            nn.Conv2d(enc_embed_dim, enc_embed_dim*num_images,
-                      kernel_size=kernel_size+4,
-                      stride=stride, padding=padding+2),
-            norm_layer(enc_embed_dim * num_images),
-            nn.ReLU6(inplace=True))
-
-        # Keep image position embeddings (this is the key part you want to preserve)
-        self.random_image_idx_embedding = random_image_idx_embedding
-        self.register_buffer(
-            "image_idx_emb",
-            torch.from_numpy(
-                get_1d_sincos_pos_embed_from_grid(embed_dim, np.arange(1000))
-            ).float(),
-            persistent=False,
-        )
-
-        # Replace LayerNorm with BatchNorm2d for CNN features
-        self.final_norm = norm_layer(enc_embed_dim*num_images)
-
-    def _generate_per_rank_generator(self):
-        # this way, the randperm will be different for each rank, but
-        # deterministic given a fixed number of forward passes
-        # (tracked by self.random_generator)
-        # and to ensure determinism when resuming from a checkpoint, we only
-        # need to save self.random_generator to state_dict
-        # generate a per-rank random seed
-        per_forward_pass_seed = torch.randint(0, 2 ** 32, (1,)).item()
-        world_rank = torch.distributed.get_rank(
-        ) if torch.distributed.is_initialized() else 0
-        per_rank_seed = per_forward_pass_seed + world_rank
-
-        # Set the seed for the random generator
-        per_rank_generator = torch.Generator()
-        per_rank_generator.manual_seed(per_rank_seed)
-        return per_rank_generator
-
-    def _get_random_image_pos(self, encoded_feats, batch_size, num_views, max_image_idx, device):
-        """
-        Generates non-repeating random image indices for each sample, retrieves corresponding
-        positional embeddings for each view, and concatenates them.
-
-        Args:
-            encoded_feats (list of tensors): Encoded features for each view.
-            batch_size (int): Number of samples in the batch.
-            num_views (int): Number of views per sample.
-            max_image_idx (int): Maximum image index for embedding.
-            device (torch.device): Device to move data to.
-
-        Returns:
-            Tensor: Concatenated positional embeddings for the entire batch.
-        """
-        # Generate random non-repeating image IDs (on CPU)
-        image_ids = torch.zeros(batch_size, num_views, dtype=torch.long)
-
-        # First view is always 0 for all samples
-        image_ids[:, 0] = 0
-
-        # Get a generator that is unique to each rank, while also being deterministic based on the global across numbers of forward passes
-        per_rank_generator = self._generate_per_rank_generator()
-
-        # Generate random non-repeating IDs for the remaining views using the generator
-        for b in range(batch_size):
-            # Use the torch.Generator for randomness to ensure randomness between forward passes
-            random_ids = torch.randperm(max_image_idx, generator=per_rank_generator)[
-                :num_views - 1] + 1
-            image_ids[b, 1:] = random_ids
-
-        # Move the image IDs to the correct device
-        image_ids = image_ids.to(device)
-
-        # Initialize list to store positional embeddings for all views
-        image_pos_list = []
-
-        for i in range(num_views):
-            # Retrieve the number of patches for this view
-            num_patches = encoded_feats[i].shape[1]
-
-            # Gather the positional embeddings for the entire batch based on the random image IDs
-            image_pos_for_view = self.image_idx_emb[image_ids[:, i]]  # (B, D)
-
-            # Expand the positional embeddings to match the number of patches
-            image_pos_for_view = image_pos_for_view.unsqueeze(
-                1).repeat(1, num_patches, 1)
-
-            image_pos_list.append(image_pos_for_view)
-
-        # Concatenate positional embeddings for all views along the patch dimension
-        image_pos = torch.cat(image_pos_list, dim=1)  # (B, Npatches_total, D)
-
-        return image_pos
-
-    def forward(self, encoded_feats, image_ids):
-        """ CNN-based decoder that only uses image position embeddings.
-
-        Args:
-            encoded_feats (list of tensors): CNN features for each view. Shape: B x C x H x W
-            image_ids (tensor): Image IDs for each spatial location
-        """
-
-        # Process CNN features directly without converting to patches
-        processed_feats = []
-        for feat in encoded_feats:
-            if len(feat.shape) == 4:  # B x C x H x W
-                processed_feats.append(feat)
-            else:  # Convert back to spatial if needed
-                B, N, C = feat.shape
-                H = W = int(N ** 0.5)  # Assume square feature maps
-                feat = feat.transpose(1, 2).view(B, C, H, W)
-                processed_feats.append(feat)
-
-        # Concatenate features along channel dimension or spatially
-        if len(processed_feats) > 1:
-            x = torch.cat(processed_feats, dim=1)  # B x (C*num_views) x H x W
-        else:
-            x = processed_feats[0]
-
-        # Add only image position embeddings (no spatial positional embeddings)
-        if self.random_image_idx_embedding:
-            image_pos = self._get_random_image_pos(
-                encoded_feats=processed_feats,
-                batch_size=x.shape[0],
-                num_views=len(processed_feats),
-                max_image_idx=self.image_idx_emb.shape[0] - 1,
-                device=x.device
-            )
-        else:
-            num_images = (torch.max(image_ids) + 1).cpu().item()
-            # Shape: num_images x D
-            image_idx_emb = self.image_idx_emb[:num_images]
-
-            # Broadcast image embeddings to spatial dimensions
-            B, C, H, W = x.shape
-            # Get embeddings for each location
-            image_pos = image_idx_emb[image_ids]
-
-            # Reshape to match spatial dimensions if needed
-            if len(image_pos.shape) == 2:  # If image_ids is flattened
-                image_pos = image_pos.view(
-                    B, H, W, -1).permute(0, 3, 1, 2)  # B x D x H x W
-
-        # Replace transformer blocks with CNN blocks
-
-        # x = self.decoder_embed(x)  # Project to decoder dimension
-        # import ipdb
-        # ipdb.set_trace()
-
-        B, C, H, W = x.shape
-        print(f"image_pos {image_pos.shape}")
-        if len(image_pos.shape) < len(x.shape):  # (B, embed_dim)
-            # (B, embed_dim, 1, 1)
-            image_pos = image_pos.unsqueeze(-1)  # 1, 2560, 192, 1
-
-        # Now check and interpolate if needed
-        # x = 1, 2560, 12, 16
-        print(f"cnn_decoder {image_pos.shape}")
-        if image_pos.shape[-2:] != x.shape[-2:]:
-            # import ipdb; ipdb.set_trace()
-            # Change to match spatial dimensions
-            image_pos = F.interpolate(
-                image_pos, size=(H, W), mode='bilinear', align_corners=False)
-
-        # Add image position embeddings
-        x = x + image_pos
-
-        # CNN processing blocks
-        # x = self.decoder_embed(x)
-
-        # import ipdb
-        # ipdb.set_trace()
-        # x = self.cnn_decoder(x, image_pos)
-        final_output = [x]  # 2560,192
-        x = self.conv_block_0(x)  # Initial convolution block
-
-        final_output.append(self.conv_block_1(x))
-        final_output.append(self.conv_block_2(x))
-        final_output.append(self.conv_block_3(x))
-        final_output.append(self.conv_block_4(x))
-        final_output.append(self.conv_block_5(x))
-        final_output.append(self.conv_block_6(x))
-        final_output.append(self.conv_block_7(x))
-        final_output.append(self.conv_block_8(x))
-        final_output.append(self.conv_block_9(x))
-        final_output.append(self.conv_block_10(x))
-        # Final normalization (can be BatchNorm instead of LayerNorm)
-
-        return final_output
-
-    # def cnn_decoder(self, x, image_pos):
-    #     """ CNN-based decoder blocks replacing transformer attention """
-
-    #     # Add image position embeddings
-    #     if image_pos.shape[-2:] == x.shape[-2:]:  # Same spatial dimensions
-    #         x = x + image_pos
-    #     else:
-    #         # Interpolate image_pos to match x dimensions if needed
-    #         image_pos = F.interpolate(
-    #             image_pos, size=x.shape[-2:], mode='bilinear',
-    #             align_corners=False)
-    #         x = x + image_pos
-
-    #     # CNN processing blocks (replace transformer blocks)
-    #     for conv_block in self.conv_blocks:
-    #         x = conv_block(x)
-
-    #     return x
-    def cnn_decoder(self, x, image_pos):
-        """ CNN-based decoder blocks replacing transformer attention """
-
-        B, C, H, W = x.shape  # 1, 10240, 24, 32
-        # import ipdb
-        # ipdb.set_trace()
-        # Fix: Always reshape image_pos to have spatial dimensions FIRST
-
-        print(f"f1 {image_pos.shape}")
-        if len(image_pos.shape) < len(x.shape):  # (B, embed_dim)
-            # (B, embed_dim, 1, 1)
-            image_pos = image_pos.unsqueeze(-1)  # 1, 10240, 768, 1
-
-        # Now check and interpolate if needed
-        # image_pos = 1,10240, 768
-        # x = 1,10240, 24,32
-        print(f"cnn_decoder {image_pos.shape}")
-        if image_pos.shape[-2:] != x.shape[-2:]:
-            # import ipdb; ipdb.set_trace()
-            # Change to match spatial dimensions
-            image_pos = F.interpolate(
-                image_pos, size=(H, W), mode='bilinear', align_corners=False)
-
-        # Add image position embeddings
-        x = x + image_pos
-
-        # CNN processing blocks
-        x = self.decoder_embed(x)
-        for conv_block in self.conv_blocks:
-            x = conv_block(x)
-        x = self.last_cnn_block(x)
-        return x

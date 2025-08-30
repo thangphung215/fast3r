@@ -25,7 +25,6 @@ from packaging import version
 from functools import partial
 
 from fast3r.dust3r.patch_embed import get_patch_embed
-
 from fast3r.dust3r.utils.misc import (
     freeze_all_params,
     transpose_to_landscape,
@@ -81,6 +80,9 @@ class Fast3R(nn.Module,
             encoder_args = deepcopy(encoder_args)
             encoder_args.pop("encoder_type")
             self.encoder = DinoEncoder(**encoder_args)
+        elif encoder_args["encoder_type"] == 'convnext':
+            encoder_args.pop('encoder_type')
+            self.encoder = ConvNext(**encoder_args)
         else:
             raise ValueError(f"Unsupported encoder type: {encoder_args['encoder_type']}")
 
@@ -966,3 +968,71 @@ class LlamaDecoder(nn.Module):
         final_output[-1] = x
 
         return final_output
+import timm
+class ConvNext(nn.Module):
+    def __init__(self, embed_dim=768,model_size='large'):
+        super(ConvNext, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            f'convnext_{model_size}.fb_in22k_ft_in1k', pretrained=True, 
+            features_only=True)
+
+    
+    def forward(self, image, true_shape = None):
+        """
+        Forward pass through the encoder
+        Returns multi-scale features from different stages
+        """
+        # torch.Size([1, 192, 128, 96])
+        # torch.Size([1, 384, 64, 48])
+        # torch.Size([1, 768, 32, 24])
+        # torch.Size([1, 1536, 16, 12])
+        
+        # features = self.backbone(image)[-1]
+        # B, C, H, W = features.shape
+        # pos = self.get_2d_sinusoidal_pos_embed(C, H, W, B)
+        # return features, pos
+        
+        features = self.backbone(image)[-2]   # [B, C, H, W]
+        B, C, H, W = features.shape
+        
+        # get pos embedding
+        pos = self.get_2d_sinusoidal_pos_embed(C, H, W, B)  # [B, C, H, W]
+        
+        # flatten both feature & pos to token shape
+        features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        pos = pos.flatten(2).transpose(1, 2)            # [B, H*W, C]
+        
+        return features, pos
+
+    def get_2d_sinusoidal_pos_embed(self, embed_dim, H, W, B):
+        """
+        embed_dim: embedding dim (must match channel dim)
+        H, W: height, width
+        B: batch size
+        return: [B, embed_dim, H, W]
+        """
+        # grid positions
+        grid_y = torch.arange(H, dtype=torch.float32).unsqueeze(1).repeat(1, W)  # [H, W]
+        grid_x = torch.arange(W, dtype=torch.float32).unsqueeze(0).repeat(H, 1)  # [H, W]
+        
+        pos_y = grid_y.reshape(-1)  # [H*W]
+        pos_x = grid_x.reshape(-1)  # [H*W]
+        
+        dim_t = torch.arange(embed_dim // 4, dtype=torch.float32)
+        dim_t = 10000 ** (2 * (dim_t // 2) / (embed_dim // 4))
+        
+        # encode y and x separately
+        pos_y = pos_y[:, None] / dim_t
+        pos_x = pos_x[:, None] / dim_t
+        
+        pos = torch.cat([torch.sin(pos_y), torch.cos(pos_y),
+                        torch.sin(pos_x), torch.cos(pos_x)], dim=1)  # [H*W, embed_dim]
+        
+        pos = pos.reshape(H, W, embed_dim).permute(2, 0, 1)  # [C, H, W]
+        pos = pos.unsqueeze(0).repeat(B, 1, 1, 1)            # [B, C, H, W]
+        return pos
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
