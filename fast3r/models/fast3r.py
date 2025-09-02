@@ -93,6 +93,9 @@ class Fast3R(nn.Module,
         elif encoder_args["encoder_type"] == 'mobilenetv4_rope2d':
             encoder_args.pop('encoder_type')
             self.encoder = MobileNetV4RoPE2D(**encoder_args)
+        elif encoder_args["encoder_type"] == 'resnet50_rope2d':
+            encoder_args.pop('encoder_type')
+            self.encoder = ResNet50RoPE2D(**encoder_args)
         else:
             raise ValueError(f"Unsupported encoder type: {encoder_args['encoder_type']}")
 
@@ -1150,10 +1153,18 @@ class MobileNetV4RoPE2D(nn.Module):
     def __init__(self, embed_dim=768, model_size='medium', pos_embed="RoPE100"):
         super(MobileNetV4RoPE2D, self).__init__()
         self.embed_dim = embed_dim
-        self.backbone = timm.create_model(
-            f'mobilenetv4_conv_{model_size}.e250_r384_in12k', pretrained=True, 
-            features_only=True)
-        
+        if model_size =='medium':
+            self.backbone = timm.create_model(
+                f'mobilenetv4_conv_{model_size}.e250_r384_in12k', 
+                pretrained=True, 
+                features_only=True)
+        elif model_size =='large':
+            self.backbone = timm.create_model(
+                f'mobilenetv4_conv_aa_{model_size}.e230_r448_in12k_ft_in1k', 
+                pretrained=True, 
+                features_only=True)
+        else:
+            raise NotImplementedError("Unknown model_size " + model_size)
         # Initialize RoPE2D positional embedding (same as CroCo)
         self.pos_embed = pos_embed
         if pos_embed.startswith("RoPE"):  # eg RoPE100
@@ -1192,6 +1203,62 @@ class MobileNetV4RoPE2D(nn.Module):
         
         # features = torch.cat((x1_fix, x2, x3_fix), dim=1)  # [1, 960/4 + 160 + 80*4, 32, 24] = [1, 720, 32, 24]
         features = torch.cat((x2, x3_fix, x4_fix), dim=1)  # [1, 160 + 80*4 + 48*16, 32, 24] = [1, 1248, 32, 24]
+        B, C, H, W = features.shape
+        
+        # Generate 2D patch positions (same format as CroCo)
+        pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
+        
+        # Flatten features to token shape
+        features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        
+        return features, pos
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
+
+class ResNet50RoPE2D(nn.Module):
+    """ResNet50RoPE2D encoder with RoPE2D positional embedding (same as CroCo Encoder)"""
+    
+    def __init__(self, embed_dim=768, model_size='medium', pos_embed="RoPE100"):
+        super(ResNet50RoPE2D, self).__init__()
+        self.embed_dim = embed_dim
+        if model_size =='medium':
+            self.backbone = timm.create_model(
+                'resnet50.a1_in1k', 
+                pretrained=True, 
+                features_only=True)
+        else:
+            raise NotImplementedError("Unknown model_size " + model_size)
+        # Initialize RoPE2D positional embedding (same as CroCo)
+        self.pos_embed = pos_embed
+        if pos_embed.startswith("RoPE"):  # eg RoPE100
+            if RoPE2D is None:
+                raise ImportError(
+                    "Cannot find cuRoPE2D, please install it following the README instructions"
+                )
+            freq = float(pos_embed[len("RoPE") :])
+            self.rope = RoPE2D(freq=freq)
+        else:
+            raise NotImplementedError("Unknown pos_embed " + pos_embed)
+        
+        # Position getter for 2D patch positions (same as CroCo)
+        self.position_getter = PositionGetter()
+
+    def forward(self, image, true_shape=None):
+        """
+        Forward pass through the encoder with RoPE2D positional embedding
+        Returns features and 2D patch positions for RoPE2D
+        """
+        # Extract features from ConvNeXt backbone
+        features = self.backbone(image)[-2]   # [B, C, H, W] - use second-to-last layer
+        # torch.Size([1, 64, 256, 192])
+        # torch.Size([1, 256, 128, 96])
+        # torch.Size([1, 512, 64, 48])
+        # torch.Size([1, 1024, 32, 24])
+        # torch.Size([1, 2048, 16, 12])
+        # x1 = x_all[-1]
         B, C, H, W = features.shape
         
         # Generate 2D patch positions (same format as CroCo)
