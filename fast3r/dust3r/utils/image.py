@@ -31,7 +31,8 @@ except ImportError:
     heif_support_enabled = False
 
 ImgNorm = tvf.Compose(
-    [tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    # [tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+    [tvf.ToTensor(), tvf.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
 
 def imread_cv2(path, options=cv2.IMREAD_COLOR):
