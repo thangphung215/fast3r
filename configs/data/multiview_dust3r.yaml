@@ -1,6 +1,6 @@
 # Define the common data root and number of views
-# data_root: /workspace/fast3r_own/data
-data_root: /home/thangphung/workspace/fast3r_own/data
+data_root: /workspace/fast3r_own/data
+# data_root: /home/thangphung/workspace/fast3r_own/data
 num_views: 4
 num_views_val: 10
 

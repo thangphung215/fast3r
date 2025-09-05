@@ -96,6 +96,12 @@ class Fast3R(nn.Module,
         elif encoder_args["encoder_type"] == 'resnet50_rope2d':
             encoder_args.pop('encoder_type')
             self.encoder = ResNet50RoPE2D(**encoder_args)
+        elif encoder_args["encoder_type"] == 'dla102x2_rope2d':
+            encoder_args.pop('encoder_type')
+            self.encoder = DLA102x2RoPE2D(**encoder_args)
+        elif encoder_args["encoder_type"] == 'efficientnetb7_rope2d':
+            encoder_args.pop('encoder_type')
+            self.encoder = EfficientNetB7RoPE2D(**encoder_args)
         else:
             raise ValueError(f"Unsupported encoder type: {encoder_args['encoder_type']}")
 
@@ -1259,6 +1265,127 @@ class ResNet50RoPE2D(nn.Module):
         # torch.Size([1, 1024, 32, 24])
         # torch.Size([1, 2048, 16, 12])
         # x1 = x_all[-1]
+        B, C, H, W = features.shape
+        
+        # Generate 2D patch positions (same format as CroCo)
+        pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
+        
+        # Flatten features to token shape
+        features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        
+        return features, pos
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
+
+class DLA102x2RoPE2D(nn.Module):
+    """ResNet50RoPE2D encoder with RoPE2D positional embedding (same as CroCo Encoder)"""
+    
+    def __init__(self, embed_dim=512, model_size='medium', pos_embed="RoPE100"):
+        super(DLA102x2RoPE2D, self).__init__()
+        self.embed_dim = embed_dim
+        if model_size =='medium':
+            self.backbone = timm.create_model(
+                'dla102x2.in1k', 
+                pretrained=True, 
+                features_only=True)
+        else:
+            raise NotImplementedError("Unknown model_size " + model_size)
+        # Initialize RoPE2D positional embedding (same as CroCo)
+        self.pos_embed = pos_embed
+        if pos_embed.startswith("RoPE"):  # eg RoPE100
+            if RoPE2D is None:
+                raise ImportError(
+                    "Cannot find cuRoPE2D, please install it following the README instructions"
+                )
+            freq = float(pos_embed[len("RoPE") :])
+            self.rope = RoPE2D(freq=freq)
+        else:
+            raise NotImplementedError("Unknown pos_embed " + pos_embed)
+        
+        # Position getter for 2D patch positions (same as CroCo)
+        self.position_getter = PositionGetter()
+
+    def forward(self, image, true_shape=None):
+        """
+        Forward pass through the encoder with RoPE2D positional embedding
+        Returns features and 2D patch positions for RoPE2D
+        """
+        # Extract features from ConvNeXt backbone
+        features = self.backbone(image)[-2]   # [B, C, H, W] - use second-to-last layer
+        # torch.Size([1, 32, 256, 192])
+        # torch.Size([1, 128, 128, 96])
+        # torch.Size([1, 256, 64, 48])
+        # torch.Size([1, 512, 32, 24])
+        # torch.Size([1, 1024, 16, 12])
+        # x1 = x_all[-1]
+        B, C, H, W = features.shape
+        
+        # Generate 2D patch positions (same format as CroCo)
+        pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
+        
+        # Flatten features to token shape
+        features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        
+        return features, pos
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
+# tf_efficientnet_b7.ns_jft_in1k
+class EfficientNetB7RoPE2D(nn.Module):
+    """EfficientNetB7RoPE2D encoder with RoPE2D positional embedding (same as CroCo Encoder)"""
+    
+    def __init__(self, embed_dim=512, model_size='medium', pos_embed="RoPE100"):
+        super(EfficientNetB7RoPE2D, self).__init__()
+        self.embed_dim = embed_dim
+        if model_size =='medium':
+            self.backbone = timm.create_model(
+                'tf_efficientnet_b7.ns_jft_in1k', 
+                pretrained=True, 
+                features_only=True)
+        else:
+            raise NotImplementedError("Unknown model_size " + model_size)
+        # Initialize RoPE2D positional embedding (same as CroCo)
+        self.pos_embed = pos_embed
+        if pos_embed.startswith("RoPE"):  # eg RoPE100
+            if RoPE2D is None:
+                raise ImportError(
+                    "Cannot find cuRoPE2D, please install it following the README instructions"
+                )
+            freq = float(pos_embed[len("RoPE") :])
+            self.rope = RoPE2D(freq=freq)
+        else:
+            raise NotImplementedError("Unknown pos_embed " + pos_embed)
+        
+        # Position getter for 2D patch positions (same as CroCo)
+        self.position_getter = PositionGetter()
+
+    def forward(self, image, true_shape=None):
+        """
+        Forward pass through the encoder with RoPE2D positional embedding
+        Returns features and 2D patch positions for RoPE2D
+        """
+        # Extract features from ConvNeXt backbone
+        x_all = self.backbone(image)   # [B, C, H, W] - use second-to-last layer
+        # torch.Size([1, 32, 256, 192])
+        # torch.Size([1, 48, 128, 96])
+        # torch.Size([1, 80, 64, 48])
+        # torch.Size([1, 224, 32, 24])
+        # torch.Size([1, 640, 16, 12])
+        # x1 = x_all[-1]
+        x2 = x_all[-2]
+        x3 = x_all[-3]
+        
+        # x1_fix = x1.reshape(x2.shape[0],-1,x2.shape[2],x2.shape[3])
+        x3_fix = x3.reshape(x2.shape[0],-1,x2.shape[2],x2.shape[3])
+        
+        # features = torch.cat((x1_fix, x2, x3_fix), dim=1)  # [1, 960/4 + 160 + 80*4, 32, 24] = [1, 720, 32, 24]
+        features = torch.cat((x2, x3_fix), dim=1)  # [1, 224 + 80*4, 32, 24] = [1, 544, 32, 24]
+        
         B, C, H, W = features.shape
         
         # Generate 2D patch positions (same format as CroCo)
