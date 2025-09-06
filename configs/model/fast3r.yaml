@@ -47,7 +47,7 @@ scheduler:
   eta_min: 1e-06
 
 net:
-  _target_: fast3r.models.fast3r.Fast3R
+  _target_: fast3r.models.fast3r.Fast3Rv2
   # encoder_args:
   #   encoder_type: croco
   #   img_size: 512
@@ -63,18 +63,20 @@ net:
     # encoder_type: convnext_rope2d
     # encoder_type: efficientnet_rope2d
     # encoder_type: mobilenetv4_rope2d
-    encoder_type: resnet50_rope2d
+    # encoder_type: resnet50_rope2d
+    encoder_type: convnext_raw
     # model_size: base
     # model_size: b3
-    # model_size: large
-    model_size: medium
+    model_size: large
+    # model_size: medium
     # embed_dim: 512
     # embed_dim: 136
     # embed_dim: 1248
-    embed_dim: 1024
+    # embed_dim: 1024
+    embed_dim: 768
     # embed_dim: 1344
   decoder_args:
-    decoder_type: fast3r
+    decoder_type: fast3rv2
     random_image_idx_embedding: true
     enc_embed_dim: ${model.net.encoder_args.embed_dim}
     embed_dim: 768
