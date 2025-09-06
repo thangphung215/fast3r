@@ -1810,7 +1810,11 @@ class ConvNextRaw(nn.Module):
         super(ConvNextRaw, self).__init__()
         self.embed_dim = embed_dim
         self.backbone = timm.create_model(
-            f'convnext_{model_size}.fb_in22k_ft_in1k', pretrained=True, 
+            f'convnext_{model_size}.fb_in22k_ft_in1k', 
+            # f'convnext_base.fb_in22k_ft_in1k_384',
+            # f'convnext_large_mlp.clip_laion2b_soup_ft_in12k_in1k_320',
+            # f'convnextv2_large.fcmae_ft_in22k_in1k_384',
+            pretrained=True, 
             features_only=True)
         
 
