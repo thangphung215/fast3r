@@ -105,6 +105,9 @@ class Fast3R(nn.Module,
         elif encoder_args["encoder_type"] == 'convnext_raw':
             encoder_args.pop('encoder_type')
             self.encoder = ConvNextRaw(**encoder_args)
+        elif encoder_args["encoder_type"] == 'inceptionnext_raw':
+            encoder_args.pop('encoder_type')
+            self.encoder = InceptionNextRaw(**encoder_args)
         else:
             raise ValueError(f"Unsupported encoder type: {encoder_args['encoder_type']}")
 
@@ -1816,7 +1819,7 @@ class ConvNextRaw(nn.Module):
             # f'convnextv2_large.fcmae_ft_in22k_in1k_384',
             pretrained=True, 
             features_only=True)
-        
+        self.avg4 = nn.AvgPool2d(4)  # downsample by 4
 
     def forward(self, image, true_shape=None):
         """
@@ -1831,7 +1834,54 @@ class ConvNextRaw(nn.Module):
         # timm.data.resolve_model_data_config(model)
         
         # features = self.backbone(image)[-1]
-        features = self.backbone(image)[-2]   # [B, C, H, W] - use second-to-last layer
+        x_all = self.backbone(image)   # [B, C, H, W] - use second-to-last layer
+        x_2 = x_all[-2]
+        x_4 = self.avg4(x_all[-4])
+        features = torch.cat((x_2, x_4), dim=1)
+        B, C, H, W = features.shape
+        
+        # Flatten features to token shape
+        features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        
+        return features
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
+
+class InceptionNextRaw(nn.Module):
+    """InceptionNextRaw"""
+    
+    def __init__(self, embed_dim=768, model_size='base'):
+        super(InceptionNextRaw, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            f'inception_next_{model_size}.sail_in1k_384',
+            pretrained=True, 
+            features_only=True)
+        self.avgpool2 = nn.AvgPool2d(2)  # downsample by 2
+        self.avgpool4 = nn.AvgPool2d(4)  # downsample by 4
+        
+
+    def forward(self, image, true_shape=None):
+        """
+        Forward pass through the encoder with RoPE2D positional embedding
+        Returns features and 2D patch positions for RoPE2D
+        """
+        # Extract features from ConvNeXt backbone
+        # torch.Size([1, 128, 128, 96])
+        # torch.Size([1, 256, 64, 48])
+        # torch.Size([1, 512, 32, 24])
+        # torch.Size([1, 1024, 16, 12])
+        # timm.data.resolve_model_data_config(model)
+        
+        # features = self.backbone(image)[-1]
+        x_all = self.backbone(image)   # [B, C, H, W] - use second-to-last layer
+        x2 = x_all[-2]
+        x3 = self.avgpool2(x_all[-3])
+        x4 = self.avgpool4(x_all[-4])
+        features = torch.cat((x2, x3, x4), dim=1)
         B, C, H, W = features.shape
         
         # Flatten features to token shape

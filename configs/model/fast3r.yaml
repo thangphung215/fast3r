@@ -42,7 +42,7 @@ optimizer:
 scheduler:
   _target_: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
   _partial_: true
-  warmup_epochs: 5
+  warmup_epochs: 1
   max_epochs: ${trainer.max_epochs}
   eta_min: 1e-06
 
@@ -65,6 +65,7 @@ net:
     # encoder_type: mobilenetv4_rope2d
     # encoder_type: resnet50_rope2d
     encoder_type: convnext_raw
+    # encoder_type: inceptionnext_raw
     # model_size: base
     # model_size: b3
     model_size: large
@@ -73,7 +74,8 @@ net:
     # embed_dim: 136
     # embed_dim: 1248
     # embed_dim: 1024
-    embed_dim: 768
+    embed_dim: 960
+    # embed_dim: 768
     # embed_dim: 1344
   decoder_args:
     decoder_type: fast3rv2
