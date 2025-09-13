@@ -84,7 +84,7 @@ net:
     embed_dim: 768
     num_heads: 12
     depth: 12
-    mlp_ratio: 4.0
+    mlp_ratio: 1.0
     qkv_bias: true
     drop: 0.0
     attn_drop: 0.0
