@@ -117,7 +117,7 @@ class Fast3R(nn.Module,
             decoder_args = deepcopy(decoder_args)
             decoder_args.pop('decoder_type')
             self.decoder = Fast3RDecoder(**decoder_args)
-        if decoder_args["decoder_type"] == 'fast3rv2':
+        elif decoder_args["decoder_type"] == 'fast3rv2':
             decoder_args = deepcopy(decoder_args)
             decoder_args.pop('decoder_type')
             self.decoder = Fast3RDecoderV2(**decoder_args)
@@ -1494,14 +1494,19 @@ class ConvNextRoPE2D(nn.Module):
         Returns features and 2D patch positions for RoPE2D
         """
         # Extract features from ConvNeXt backbone
+        # torch.Size([1, 192, 128, 96])
+        # torch.Size([1, 384, 64, 48])
+        # torch.Size([1, 768, 32, 24])
+        # torch.Size([1, 1536, 16, 12])
+        
         features = self.backbone(image)[-2]   # [B, C, H, W] - use second-to-last layer
         B, C, H, W = features.shape
         
-        # Generate 2D patch positions (same format as CroCo)
-        pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
-        
         # Flatten features to token shape
         features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        
+        # Generate 2D patch positions (same format as CroCo)
+        pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
         
         return features, pos
 
