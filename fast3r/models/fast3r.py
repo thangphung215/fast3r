@@ -108,6 +108,9 @@ class Fast3R(nn.Module,
         elif encoder_args["encoder_type"] == 'inceptionnext_raw':
             encoder_args.pop('encoder_type')
             self.encoder = InceptionNextRaw(**encoder_args)
+        elif encoder_args["encoder_type"] == 'convnext_sinusoidal2d':
+            encoder_args.pop('encoder_type')
+            self.encoder = ConvNextSinusoidal2D(**encoder_args)
         else:
             raise ValueError(f"Unsupported encoder type: {encoder_args['encoder_type']}")
 
@@ -1470,24 +1473,35 @@ class ConvNextRoPE2D(nn.Module):
         super(ConvNextRoPE2D, self).__init__()
         self.embed_dim = embed_dim
         self.backbone = timm.create_model(
-            f'convnext_{model_size}.fb_in22k_ft_in1k', pretrained=True, 
+            # f'convnext_{model_size}.fb_in22k_ft_in1k', 
+            # 'convnextv2_huge.fcmae_ft_in22k_in1k_512',
+            'convnext_xlarge.fb_in22k_ft_in1k_384',
+            pretrained=True, 
             features_only=True)
-        
-        # Initialize RoPE2D positional embedding (same as CroCo)
-        self.pos_embed = pos_embed
-        if pos_embed.startswith("RoPE"):  # eg RoPE100
-            if RoPE2D is None:
-                raise ImportError(
-                    "Cannot find cuRoPE2D, please install it following the README instructions"
-                )
-            freq = float(pos_embed[len("RoPE") :])
-            self.rope = RoPE2D(freq=freq)
-        else:
-            raise NotImplementedError("Unknown pos_embed " + pos_embed)
-        
-        # Position getter for 2D patch positions (same as CroCo)
-        self.position_getter = PositionGetter()
+        self._set_patch_embed(512, 16, embed_dim)
 
+        
+        # # Initialize RoPE2D positional embedding (same as CroCo)
+        # self.pos_embed = pos_embed
+        # if pos_embed.startswith("RoPE"):  # eg RoPE100
+        #     if RoPE2D is None:
+        #         raise ImportError(
+        #             "Cannot find cuRoPE2D, please install it following the README instructions"
+        #         )
+        #     freq = float(pos_embed[len("RoPE") :])
+        #     self.rope = RoPE2D(freq=freq)
+        # else:
+        #     raise NotImplementedError("Unknown pos_embed " + pos_embed)
+        
+        # # Position getter for 2D patch positions (same as CroCo)
+        # self.position_getter = PositionGetter()
+    
+    def _set_patch_embed(self, img_size=224, patch_size=16, enc_embed_dim=768):
+        self.patch_embed = get_patch_embed(
+            'ManyAR_PatchEmbed', 512, 16, 1024
+        )
+
+    
     def forward(self, image, true_shape=None):
         """
         Forward pass through the encoder with RoPE2D positional embedding
@@ -1506,9 +1520,24 @@ class ConvNextRoPE2D(nn.Module):
         features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
         
         # Generate 2D patch positions (same format as CroCo)
-        pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
+        # pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
+        _, pos = self.patch_embed(image, true_shape=true_shape)
+
         
         return features, pos
+
+        # #####################################
+        # features = self.backbone(image)[-2]   # [B, C, H, W]
+        # B, C, H, W = features.shape
+        
+        # # get pos embedding
+        # pos = self.get_2d_sinusoidal_pos_embed(C, H, W, B)  # [B, C, H, W]
+        
+        # # flatten both feature & pos to token shape
+        # features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        # pos = pos.flatten(2).transpose(1, 2)            # [B, H*W, C]
+        
+        # return features, pos
 
     def get_feature_dims(self):
         """Get the number of channels at each stage"""
@@ -1867,7 +1896,8 @@ class InceptionNextRaw(nn.Module):
             features_only=True)
         self.avgpool2 = nn.AvgPool2d(2)  # downsample by 2
         self.avgpool4 = nn.AvgPool2d(4)  # downsample by 4
-        
+    
+    
 
     def forward(self, image, true_shape=None):
         """
@@ -1893,6 +1923,80 @@ class InceptionNextRaw(nn.Module):
         features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
         
         return features
+
+    def get_feature_dims(self):
+        """Get the number of channels at each stage"""
+        return [info['num_chs'] for info in self.feature_info]
+    
+    
+class ConvNextSinusoidal2D(nn.Module):
+    """ConvNextSinusoidal2D encoder with sinusoidal positional embedding (same as CroCo Encoder)"""
+    
+    def __init__(self, embed_dim=768, model_size='large', pos_embed="RoPE100"):
+        super(ConvNextSinusoidal2D, self).__init__()
+        self.embed_dim = embed_dim
+        self.backbone = timm.create_model(
+            # f'convnext_{model_size}.fb_in22k_ft_in1k', 
+            # 'convnextv2_huge.fcmae_ft_in22k_in1k_512',
+            'convnext_xlarge.fb_in22k_ft_in1k_384',
+            pretrained=True, 
+            features_only=True)
+
+    def _get_sinusoidal_pos_embed(self, H, W, embed_dim, device):
+        """
+        Generate sinusoidal positional embeddings directly in feature dimension
+        H, W: height, width
+        embed_dim: embedding dimension
+        device: torch device
+        return: [H*W, embed_dim]
+        """
+        # Create coordinate grids
+        y_pos = torch.arange(H, dtype=torch.float32, device=device).unsqueeze(1).repeat(1, W).flatten()  # [H*W]
+        x_pos = torch.arange(W, dtype=torch.float32, device=device).unsqueeze(0).repeat(H, 1).flatten()  # [H*W]
+        
+        # Frequency bands
+        dim_t = torch.arange(embed_dim // 4, dtype=torch.float32, device=device)
+        dim_t = 10000 ** (2 * (dim_t // 2) / (embed_dim // 4))
+        
+        # Encode y and x positions
+        pos_y = y_pos[:, None] / dim_t  # [H*W, embed_dim//4]
+        pos_x = x_pos[:, None] / dim_t  # [H*W, embed_dim//4]
+        
+        # Apply sin/cos
+        pos_y = torch.cat([torch.sin(pos_y), torch.cos(pos_y)], dim=1)  # [H*W, embed_dim//2]
+        pos_x = torch.cat([torch.sin(pos_x), torch.cos(pos_x)], dim=1)  # [H*W, embed_dim//2]
+        
+        # Concatenate to get full positional embedding
+        pos_embed = torch.cat([pos_y, pos_x], dim=1)  # [H*W, embed_dim]
+        
+        return pos_embed
+    
+    def forward(self, image, true_shape=None):
+        """
+        Forward pass through the encoder with RoPE2D positional embedding
+        Returns features and 2D patch positions for RoPE2D
+        """
+        # Extract features from ConvNeXt backbone
+        # torch.Size([1, 192, 128, 96])
+        # torch.Size([1, 384, 64, 48])
+        # torch.Size([1, 768, 32, 24])
+        # torch.Size([1, 1536, 16, 12])
+        
+        features = self.backbone(image)[-2]   # [B, C, H, W] - use second-to-last layer
+        B, C, H, W = features.shape
+        
+        # Flatten features to token shape
+        features = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        
+        # Generate 2D patch positions (same format as CroCo)
+        # pos = self.position_getter(B, H, W, features.device)  # [B, H*W, 2]
+        pos_emb = self._get_sinusoidal_pos_embed(H, W, C, features.device)  # [H*W, C]
+        pos_emb = pos_emb.unsqueeze(0).expand(B, -1, -1)  # [B, H*W, C]
+        
+        # Add positional embeddings directly to features
+        features = features + pos_emb
+
+        return features, pos_emb
 
     def get_feature_dims(self):
         """Get the number of channels at each stage"""

@@ -42,12 +42,12 @@ optimizer:
 scheduler:
   _target_: pl_bolts.optimizers.lr_scheduler.LinearWarmupCosineAnnealingLR
   _partial_: true
-  warmup_epochs: 1
+  warmup_epochs: 2
   max_epochs: ${trainer.max_epochs}
   eta_min: 1e-06
 
 net:
-  _target_: fast3r.models.fast3r.Fast3Rv2
+  _target_: fast3r.models.fast3r.Fast3R
   # encoder_args:
   #   encoder_type: croco
   #   img_size: 512
@@ -60,11 +60,12 @@ net:
   #   pos_embed: RoPE100
   #   attn_implementation: flash_attention
   encoder_args:
+    encoder_type: convnext_sinusoidal2d
     # encoder_type: convnext_rope2d
     # encoder_type: efficientnet_rope2d
     # encoder_type: mobilenetv4_rope2d
     # encoder_type: resnet50_rope2d
-    encoder_type: convnext_raw
+    # encoder_type: convnext_raw
     # encoder_type: inceptionnext_raw
     # model_size: base
     # model_size: b3
@@ -74,17 +75,17 @@ net:
     # embed_dim: 136
     # embed_dim: 1248
     # embed_dim: 1024
-    embed_dim: 960
-    # embed_dim: 768
+    # embed_dim: 960
+    embed_dim: 1024
     # embed_dim: 1344
   decoder_args:
-    decoder_type: fast3rv2
+    decoder_type: fast3r
     random_image_idx_embedding: true
     enc_embed_dim: ${model.net.encoder_args.embed_dim}
     embed_dim: 768
     num_heads: 12
     depth: 12
-    mlp_ratio: 1.0
+    mlp_ratio: 4.0
     qkv_bias: true
     drop: 0.0
     attn_drop: 0.0
