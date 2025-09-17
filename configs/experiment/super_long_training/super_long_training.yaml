@@ -11,7 +11,7 @@ seed: 42
 
 tags: ["train", "super_long_training"]
 
-task_name: convnext_xlarge_sinusoidal2d_arkit_1input_1x6000Ada_20250918_30e_5000_100_arkit_scannetpp_12_10view
+task_name: convnext_xlarge_sinusoidal2d_arkit_1input_1x6000Ada_20250918_30e_2x5000_100_arkit_scannetpp_12_10view
 # task_name: test_convnextrope2d_xlarge_1input_1x6000Ada_20250918_30e_5000_100_arkit_scannetpp_12_10view_2e5
 # task_name: test_convnextraw_large_1input_1x6000Ada_20250907_100e_1500_arkit_co3d_dtu_15_12view_ReduceLROnPlateau
 # task_name: resnet50_rope2d_1input_1x3090_20250902_60e_1000arkit_co3d_DTU_full_12_10view
@@ -50,8 +50,8 @@ data:
     train_datasets:
       # - 1_500 @ Co3d_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_degree_range=360, num_samples_per_window=100, ROOT='${data.data_root}/co3d_all_seqs_per_category_subset_processed', aug_crop=16, mask_bg='rand', resolution=[(512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
       # - 5_00 @ Co3d_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_degree_range=360, num_samples_per_window=100, ROOT='${data.data_root}/co3d_all_seqs_per_category_subset_processed', aug_crop=16, mask_bg='rand', resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
-      - 5_0 @ ScanNetpp_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_size=${python_eval:"${data.num_views} * 2"}, num_samples_per_window=5, ROOT='${data.data_root}/scannetpp_processed', aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
-      - 5_0 @ ARKitScenes_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_size=${python_eval:"${data.num_views} * 5"}, num_samples_per_window=5, ROOT='${data.data_root}/arkitscenes_processed', aug_crop=256, resolution=[(512, 384),(512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
+      - 5_000 @ ScanNetpp_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_size=${python_eval:"${data.num_views} * 2"}, num_samples_per_window=5, ROOT='${data.data_root}/scannetpp_processed', aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
+      - 5_000 @ ARKitScenes_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_size=${python_eval:"${data.num_views} * 5"}, num_samples_per_window=5, ROOT='${data.data_root}/arkitscenes_processed', aug_crop=256, resolution=[(512, 384),(512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
       # - 1_000 @ ARKitScenes_Multiview(split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, window_size=${python_eval:"${data.num_views} * 5"}, num_samples_per_window=5, ROOT='${data.data_root}/arkitscenes_processed', aug_crop=256, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
       # - 80_000 @ Habitat_Multiview(1_000, split='train', data_scaling=${data.data_scaling}, num_views=${data.num_views}, ROOT='${data.data_root}/habitat_processed', aug_crop=16, resolution=[(512, 384), (512, 336), (512, 288), (512, 256), (512, 160)], transform=ColorJitter)
       # - 1_00 @ BlendMVS(split='train', num_frames=${data.num_views}, num_seq=100, ROOT='${data.data_root}/BlendedMVS/raw', resolution=[(512, 384),(512, 336), (512, 288), (512, 256), (512, 160)])
@@ -103,7 +103,7 @@ trainer:
   devices: 1
   num_nodes: 1
   accelerator: auto
-  max_epochs: 3
+  max_epochs: 30
   # strategy: deepspeed_stage_2
   strategy:
     _target_: lightning.pytorch.strategies.DeepSpeedStrategy
